@@ -1,2 +1,9 @@
 .vscode/*
 .history/*
+
+*.c
+*.exe
+*.dll
+*.o
+*.a
+*.so
