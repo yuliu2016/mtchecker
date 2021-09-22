@@ -21,6 +21,8 @@ import tkinter
 import typing
 import functools
 import argparse
+import asyncio
+import pathlib
 
 p = platform.system()
 is_windows = p == "Windows"
@@ -40,19 +42,33 @@ except ImportError:
     tk_lib_available = False
 
 
+
+def logE(s):
+    print("Error: " + s)
+
+def logI(s):
+    print("Info: " + s)
+
+def logP(s):
+    print("Pass: " + s)
+
+def logW(s):
+    print("Warn: " + s)
+
+
 def check_gcc_version():
     gcc_path = shutil.which("gcc");
     if not gcc_path:
-        print("Error: GCC is not found. Did you install it?")
+        logE("GCC is not found. Did you install it?")
         return False
-    print(f"Info: Found gcc at {gcc_path}")
+    logI(f"Found gcc at {gcc_path}")
 
     gccv = subprocess.run(["gcc", "--version"], capture_output=True)
     if gccv.returncode != 0:
-        print("Error: GCC might be broken")
+        logE("GCC might be broken")
     
     v_line = gccv.stdout.decode().split("\n")[0].strip()
-    print(f"Pass: <{v_line}>")
+    logI(f"<{v_line}>")
 
     version = v_line.split(" ")[-1]
 
@@ -60,7 +76,7 @@ def check_gcc_version():
     major, minor = int(major), int(minor)
 
     if major < 8 or (major == 8 and minor < 1):
-        print("Warn: Your GCC version is older than the recommended version")
+        logW("Your GCC version is older than the recommended version")
         return False
     return True
 
@@ -68,16 +84,16 @@ def check_gcc_version():
 def check_git_version():
     git_path = shutil.which("git");
     if not git_path:
-        print("Error: Git is not found. Did you install it?")
+        logE("Git is not found. Did you install it?")
         return False
-    print(f"Info: Found git at {git_path}")
+    logI(f"Found git at {git_path}")
 
     gitv = subprocess.run(["git", "--version"], capture_output=True)
     if gitv.returncode != 0:
-        print("Error: git might be broken")
+        logE()("git might be broken")
     
     v_line = gitv.stdout.decode().split("\n")[0].strip()
-    print(f"Pass: <{v_line}>")
+    logI(f"<{v_line}>")
     return True
 
 
@@ -118,17 +134,22 @@ class TkOut:
     def __init__(self) -> None:
         self.window = Tk()
         self.window.title("2MP3 Checker")
-        self.window.geometry('600x600')
 
         win = self.window
 
         frm = Frame(win)
 
-        options = [f"A{i}" for i in range(1,8)]
+        options = [f"Assignment {i}" for i in range(1,8)]
         svar = tkinter.StringVar(frm)
-        svar.set("A1")
+        svar.set("Assignment 1")
         self.selector = OptionMenu(frm, svar, *options)
         self.selector.pack(side=LEFT)
+
+        options2 = ["All Questions"] + [f"Question {i}" for i in range(1,8)]
+        svar2 = tkinter.StringVar(frm)
+        svar2.set("All Questions")
+        self.selector2 = OptionMenu(frm, svar2, *options2)
+        self.selector2.pack(side=LEFT)
 
         self.btn2 = Button(frm, text="Open a new Folder")
         self.btn2.pack(side=LEFT)
@@ -141,14 +162,14 @@ class TkOut:
         self.folder.pack()
 
 
-        self.results = ScrolledText(self.window, width=80, height=80)
+        self.results = ScrolledText(self.window, width=80, height=24)
         self.results.pack()
         self.results.tag_config("t_blue", foreground="blue")
         self.results.tag_config("t_yellow", foreground="yellow")
         self.results.tag_config("t_red", foreground="red")
         self.results.tag_config("t_green", foreground="green")
     
-    def flush():
+    def flush(self):
         pass
 
     def write(self, obj):
@@ -176,39 +197,86 @@ class TkOut:
         self.results.insert(END, s, colour)
 
 
+class EWrapper:
+    def __init__(self, stdout) -> None:
+        self.stdout = stdout
+
+    def flush(self):
+        self.stdout.flush()
+
+    def write(self, obj):
+        self.stdout.write(f"Error: {obj}")
+
 def sequential_checks(*funcs: typing.Callable[..., bool]):
     for func in funcs:
         result = func()
         if not result:
-            print(f"Error: Stopping at check <{func.__name__}>")
+            logE(f"Stopping at check <{func.__name__}>")
             break
 
 
-def setup_stdout():
+def setup_stdio():
     using_tk = False
+    new_stdout = None
     if tk_lib_available:
         try:
             using_tk = True
-            sys.stdout = TkOut()  # Use the graphical interface!!
+            new_stdout = TkOut()  # Use the graphical interface!!
         except TclError:
             pass
     
     if not using_tk:
         if is_linux or is_wsl or is_mac:
-            sys.stdout = ShellOut(sys.stdout, wrapped=True)
+            new_stdout= ShellOut(sys.stdout, wrapped=True)
         elif is_windows:
-            sys.stdout = ShellOut(sys.stdout, wrapped=False)
+            new_stdout = ShellOut(sys.stdout, wrapped=False)
+
+    if new_stdout:
+        sys.stdout = new_stdout
+        sys.stderr = EWrapper(new_stdout)
     
     return using_tk
 
 
+def object_file_name(fpath: str) -> str:
+    path = pathlib.Path(fpath)
+    if path.suffix != ".c":
+        logE("Not Compiling a C file")
+        return None
+    
+    if is_windows:
+        return path.with_suffix(".exe")
+    else:
+        return path.with_suffix(".o")
+
+
+def simple_compile(fpath="test.c"):
+    if not os.path.isfile(fpath):
+        logE("Compiled file does not exist")
+        return
+    objfile = object_file_name(fpath)
+    if not objfile:
+        return
+
+    compile_proc = subprocess.run(
+        ["gcc", "-o", objfile, fpath, "-lm"],
+        capture_output=True)
+    if compile_proc.returncode != 0:
+        logE(compile_proc.stderr.decode())
+        return False
+    
+    logP(f"{fpath} compiled successfully! ")
+    return True
+    
+
 if __name__ == "__main__":
 
-    using_tk = setup_stdout()
+    using_tk = setup_stdio()
 
     sequential_checks(
         check_gcc_version,
-        check_git_version
+        check_git_version,
+        simple_compile
     )
 
     if using_tk: 
