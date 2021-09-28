@@ -6,6 +6,10 @@ Checks the following:
 - Code compiles correctly
 - Code outputs correct results for certain test cases
 - Code is uploaded to GitLab
+
+
+On Windows, the checker opens a GUI. Otherwise, it just
+outputs everything into stdout
 """
 
 
@@ -24,6 +28,7 @@ import argparse
 import asyncio
 import pathlib
 import time
+import math
 
 p = platform.system()
 is_windows = p == "Windows"
@@ -134,7 +139,7 @@ class ShellOut:
 class TkOut:
     def __init__(self) -> None:
         self.window = Tk()
-        self.window.title("2MP3 Checker")
+        self.window.title("2MP3 Code Checker")
 
         win = self.window
 
@@ -327,6 +332,147 @@ def load_shared(fpath="test"):
     print(b)
     return True
 
+
+def parse_signature(sig: str):
+    if not re.match("\(()*\)", sig):
+        return None
+
+class MTTestSuite:
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    def function(self, file, signature, compile_args=""):
+        def factory(f):
+            return f
+        return factory
+
+def testcase(x):
+    pass
+
+A1 = MTTestSuite(
+    name="Assignment 1",
+    path="A1"
+)
+
+@A1.function(
+    file="Q1/question1.c",
+    signature="int minutes (int m, int h, int d)"
+)
+def test_q1_minutes(minutes):
+
+    def normal():
+        assert minutes(1,1,1) == 1501
+
+    def all_zero():
+        assert minutes(0, 0, 0) == 0
+    
+    return normal, all_zero
+
+
+@A1.function(
+    file="Q2/question2.c",
+    signature="float onethird (int n)",
+    compile_args="-lm"
+)
+def test_q2_onethird(onethird):
+    def one():
+        assert math.isclose(onethird(1), 1)
+
+    def two():
+        assert math.isclose(onethird(2), 5/8)
+
+    def three():
+        assert math.isclose(onethird(3), 14/27)
+
+    def many():
+        assert math.isclose(onethird(100), 0.338350)
+
+    return one, two, three, many
+
+
+@A1.function(
+    file="Q3/question3.c",
+    signature="int multiples (int x, int y, int N)"
+)
+def test_q3_multiples(multiples):
+    def given_case():
+        assert multiples(2,3,10) == 42
+
+    def case2():
+        assert multiples(3,4,15) == 57
+
+    def n_less_than_xy():
+        assert multiples(10,12,5) == 0
+
+    return given_case, case2, n_less_than_xy
+
+
+
+@A1.function(
+    file="Q4/question4.c",
+    signature="float compoundInterest (float p, int a, int n)",
+    compile_args="-lm"
+)
+def test_q4_compound_interest(compoundInterest):
+    def monthly_interest():
+        assert math.isclose(compoundInterest(100.0, 0.001, 12), 101.20662204957915)
+
+    return (monthly_interest, )
+
+
+@A1.function(
+    file="Q5/question5.c",
+    signature="int LeapYearCheck (int n)"
+)
+def test_q5_leap_year(LeapYearCheck):
+    def normal_year():
+        assert not LeapYearCheck(2021)
+
+    def normal_leap():
+        assert LeapYearCheck(2020)
+
+    def leap_100():
+        assert not LeapYearCheck(1900)
+        assert not LeapYearCheck(1700)
+
+    def leap_400():
+        assert LeapYearCheck(1600)
+        assert LeapYearCheck(2000)
+
+    return normal_year, normal_leap, leap_100, leap_400
+
+
+@A1.function(
+    file="Q6/question6.c",
+    signature="int FactorialWhile (int n)"
+)
+@A1.function(
+    file="Q6/question6.c",
+    signature="int FactorialDoWhile (int n)"
+)
+def test_q6_factorial(factorial):
+    def zero():
+        assert factorial(0) == 1
+
+    def one():
+        assert factorial(1) == 1
+
+    def two():
+        assert factorial(2) == 2
+
+    def seven():
+        assert factorial(7) == 5040
+
+    return zero, one, two, seven
+
+
+@A1.function(
+    file="Q7/question7.c",
+    signature="void mileage (void)"
+)
+def test_q7_mileage(mileage):
+    assert mileage is not None
+    return ()
 
 if __name__ == "__main__":
 
