@@ -351,140 +351,79 @@ def parse_signature(sig: str):
     if not re.match("\(()*\)", sig):
         return None
 
-class TestSuite:
-    def __init__(self, name, path) -> None:
+
+class Func:
+    def test(self, args, expect, threshold=None):
         pass
 
-    def function(self, file, signature, compile_args=""):
+    def note(self, msg):
+        pass
+
+class FuncFact:
+    def __enter__(self) :
+        return Func()
+
+class TestSuite:
+    def __init__(self, name, path_format) -> None:
+        pass
+
+    def function(self, file, function, compile_args=""):
         def factory(f):
             return f
         return factory
 
+    def func(self, file_args, func_signature):
+        return FuncFact()
+
+
+DEFAULT_PATH_FORMAT = os.path.join("A1", "Q{0}","question{0}.c")
 
 A1 = TestSuite(
     name="Assignment 1",
-    path="A1"
+    path_format=DEFAULT_PATH_FORMAT
 )
 
-@A1.function(
-    file="Q1/question1.c",
-    signature="int minutes (int m, int h, int d)"
-)
-def test_q1_minutes(minutes):
-
-    def normal():
-        assert minutes(1,1,1) == 1501
-
-    def all_zero():
-        assert minutes(0, 0, 0) == 0
+with A1.func(1, "int minutes (int m, int h, int d)") as f:
+    f.test(args=(1,1,1), expect=1501)
+    f.test(args=(30,15,2), expect=3810)
+    f.test(args=(0,0,0), expect=0)
     
-    return normal, all_zero
 
+with A1.func(2, "float onethird (int n)") as f:
+    f.test(args=(1,), expect=1.000000, threshold=1e-6)
+    f.test(args=(10,), expect=0.385000, threshold=1e-6)
+    f.test(args=(9999,), expect=0.333383, threshold=1e-6)
+    
+with A1.func(3, "int multiples (int x, int y, int N)") as f:
+    f.test(args=(2,3,10), expect=42) # given case
+    f.test(args=(4,10,20), expect=70)
+    f.test(args=(32,14,10), expect=0)
+    f.test(args=(11,15,20), expect=26)
 
-@A1.function(
-    file="Q2/question2.c",
-    signature="float onethird (int n)",
-    compile_args="-lm"
-)
-def test_q2_onethird(onethird):
-    def one():
-        assert math.isclose(onethird(1), 1)
+with A1.func(4, "float compoundInterest (float p, int a, int n)") as f:
+    f.test(args=(0.05,20,5), expect=25.53, threshold=1e-3)
+    f.test(args=(0.10,910,3), expect=1211.21, threshold=1e-3)
+    f.test(args=(0.06,800,2), expect=898.88, threshold=1e-3)
 
-    def two():
-        assert math.isclose(onethird(2), 5/8)
+with A1.func(5, "int LeapYearCheck (int n)") as f:
+    f.test(args=(2000,), expect=1)
+    f.test(args=(2021,), expect=0)
+    f.test(args=(1752,), expect=1)
+    f.test(args=(2100,), expect=0)
 
-    def three():
-        assert math.isclose(onethird(3), 14/27)
+with A1.func(6, "int FactorialWhile (int n)") as f:
+    f.test(args=(3,), expect=6)
+    f.test(args=(0,), expect=1)
+    f.test(args=(10,), expect=3628800)
 
-    def many():
-        assert math.isclose(onethird(100), 0.338350)
+with A1.func(6, "int FactorialDoWhile (int n)") as f:
+    f.test(args=(3,), expect=6)
+    f.test(args=(0,), expect=1)
+    f.test(args=(10,), expect=3628800)
 
-    return one, two, three, many
+with A1.func(7, "void mileage (void)") as f:
+    f.note("Not currently tested")
 
-
-@A1.function(
-    file="Q3/question3.c",
-    signature="int multiples (int x, int y, int N)"
-)
-def test_q3_multiples(multiples):
-    def given_case():
-        assert multiples(2,3,10) == 42
-
-    def case2():
-        assert multiples(3,4,15) == 57
-
-    def n_less_than_xy():
-        assert multiples(10,12,5) == 0
-
-    return given_case, case2, n_less_than_xy
-
-
-
-@A1.function(
-    file="Q4/question4.c",
-    signature="float compoundInterest (float p, int a, int n)",
-    compile_args="-lm"
-)
-def test_q4_compound_interest(compoundInterest):
-    def monthly_interest():
-        assert math.isclose(compoundInterest(100.0, 0.001, 12), 101.20662204957915)
-
-    return (monthly_interest, )
-
-
-@A1.function(
-    file="Q5/question5.c",
-    signature="int LeapYearCheck (int n)"
-)
-def test_q5_leap_year(LeapYearCheck):
-    def normal_year():
-        assert not LeapYearCheck(2021)
-
-    def normal_leap():
-        assert LeapYearCheck(2020)
-
-    def leap_100():
-        assert not LeapYearCheck(1900)
-        assert not LeapYearCheck(1700)
-
-    def leap_400():
-        assert LeapYearCheck(1600)
-        assert LeapYearCheck(2000)
-
-    return normal_year, normal_leap, leap_100, leap_400
-
-
-@A1.function(
-    file="Q6/question6.c",
-    signature="int FactorialWhile (int n)"
-)
-@A1.function(
-    file="Q6/question6.c",
-    signature="int FactorialDoWhile (int n)"
-)
-def test_q6_factorial(factorial):
-    def zero():
-        assert factorial(0) == 1
-
-    def one():
-        assert factorial(1) == 1
-
-    def two():
-        assert factorial(2) == 2
-
-    def seven():
-        assert factorial(7) == 5040
-
-    return zero, one, two, seven
-
-
-@A1.function(
-    file="Q7/question7.c",
-    signature="void mileage (void)"
-)
-def test_q7_mileage(mileage):
-    assert mileage is not None
-    return ()
 
 if __name__ == "__main__":
 
