@@ -1,5 +1,11 @@
+__pycache__/*
+build/*
+dist/*
 .vscode/*
 .history/*
+
+*.spec
+*.txt
 
 *.c
 *.exe
