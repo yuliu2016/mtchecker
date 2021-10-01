@@ -19,13 +19,13 @@ import os
 import sys
 import re
 import platform
-import contextlib
+# import contextlib
 import shutil
 import tkinter
 import typing
-import functools
+# import functools
 import argparse
-import asyncio
+# import asyncio
 import pathlib
 import time
 import math
@@ -43,6 +43,7 @@ is_wsl = is_linux and "Microsoft" in platform.uname()
 try:
     from tkinter import *
     from tkinter.scrolledtext import ScrolledText
+    from tkinter.filedialog import askdirectory
     tk_lib_available = True
 except ImportError:
     tk_lib_available = False
@@ -69,7 +70,9 @@ def check_gcc_version():
         return False
     logI(f"Found gcc at {gcc_path}")
 
-    gccv = subprocess.run(["gcc", "--version"], capture_output=True)
+    gccv = subprocess.run(["gcc", "--version"], 
+        capture_output=True, stdin=subprocess.DEVNULL)
+
     if gccv.returncode != 0:
         logE("GCC might be broken")
     
@@ -94,7 +97,9 @@ def check_git_version():
         return False
     logI(f"Found git at {git_path}")
 
-    gitv = subprocess.run(["git", "--version"], capture_output=True)
+    gitv = subprocess.run(["git", "--version"], 
+        capture_output=True, stdin=subprocess.DEVNULL)
+
     if gitv.returncode != 0:
         logE()("git might be broken")
     
@@ -157,10 +162,10 @@ class TkOut:
         self.selector2 = OptionMenu(frm, svar2, *options2)
         self.selector2.pack(side=LEFT)
 
-        self.btn2 = Button(frm, text="Open a new Folder")
+        self.btn2 = Button(frm, text="Open Folder", command=self.open_folder)
         self.btn2.pack(side=LEFT)
 
-        self.btn = Button(frm, text="Check my Code")
+        self.btn = Button(frm, text="Run Code Checker", command=self.check_code)
         self.btn.pack(side=LEFT)
         
         frm.pack()
@@ -174,6 +179,15 @@ class TkOut:
         self.results.tag_config("t_yellow", foreground="yellow")
         self.results.tag_config("t_red", foreground="red")
         self.results.tag_config("t_green", foreground="green")
+
+
+    def open_folder(self):
+        dir = askdirectory()
+        logI(f"Opened project folder {dir}")
+        return dir
+
+    def check_code(self):
+        logI("Checked the code!")
     
     def flush(self):
         pass
@@ -337,8 +351,8 @@ def parse_signature(sig: str):
     if not re.match("\(()*\)", sig):
         return None
 
-class MTTestSuite:
-    def __init__(self, *args, **kwargs) -> None:
+class TestSuite:
+    def __init__(self, name, path) -> None:
         pass
 
     def function(self, file, signature, compile_args=""):
@@ -346,10 +360,8 @@ class MTTestSuite:
             return f
         return factory
 
-def testcase(x):
-    pass
 
-A1 = MTTestSuite(
+A1 = TestSuite(
     name="Assignment 1",
     path="A1"
 )
@@ -475,6 +487,16 @@ def test_q7_mileage(mileage):
     return ()
 
 if __name__ == "__main__":
+
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-p", "--project", 
+        help="specify the root project directory", metavar="PATH")
+    parser.add_argument("--display", 
+        help="specify the mode of display",
+        choices=["any", "shell", "gui"],
+        default="default")
+    args = parser.parse_args()
 
     using_tk = setup_stdio()
 
