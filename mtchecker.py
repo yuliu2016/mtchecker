@@ -6,10 +6,6 @@ Checks the following:
 - Code compiles correctly
 - Code outputs correct results for certain test cases
 - Code is uploaded to GitLab
-
-
-On Windows, the checker opens a GUI. Otherwise, it just
-outputs everything into stdout
 """
 
 
@@ -19,13 +15,9 @@ import os
 import sys
 import re
 import platform
-# import contextlib
 import shutil
 import tkinter
-import typing
-# import functools
 import argparse
-# import asyncio
 import pathlib
 import time
 import math
@@ -47,6 +39,9 @@ try:
     tk_lib_available = True
 except ImportError:
     tk_lib_available = False
+
+
+from typing import *
 
 
 
@@ -230,7 +225,7 @@ class EWrapper:
         self.stdout.write(f"Error: {obj}")
         self.stderr.write(obj)
 
-def sequential_checks(*funcs: typing.Callable[..., bool]):
+def sequential_checks(*funcs: Callable[..., bool]):
     for func in funcs:
         result = func()
         if not result:
@@ -352,28 +347,25 @@ def parse_signature(sig: str):
         return None
 
 
-class Func:
+class CFunction:
+    def __enter__(self) :
+        return self
+
+    def __exit__(self, *exc_info):
+        pass
+
     def test(self, args, expect, threshold=None):
         pass
 
     def note(self, msg):
         pass
 
-class FuncFact:
-    def __enter__(self) :
-        return Func()
-
 class TestSuite:
     def __init__(self, name, path_format) -> None:
         pass
 
-    def function(self, file, function, compile_args=""):
-        def factory(f):
-            return f
-        return factory
-
     def func(self, file_args, func_signature):
-        return FuncFact()
+        return CFunction()
 
 
 DEFAULT_PATH_FORMAT = os.path.join("A1", "Q{0}","question{0}.c")
@@ -425,29 +417,53 @@ with A1.func(7, "void mileage (void)") as f:
     f.note("Not currently tested")
 
 
-if __name__ == "__main__":
+class InitConfig(NamedTuple):
+    path: str
+    display: str
+    suites: Optional[List[str]]
+    tests: Optional[List[int]]
 
+
+def init_config():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("-p", "--project", 
-        help="specify the root project directory", metavar="PATH")
-    parser.add_argument("--display", 
+    parser.add_argument("-p", 
+        help="specify the root project directory, pwd if unset", metavar="PATH")
+
+    parser.add_argument("-s", metavar="SUITE", type=int, nargs="+",
+        help="specify the test suite numbers. All suites are tested if unset.")
+    parser.add_argument("-t", metavar="TEST", type=int, nargs="+",
+        help="specify the test numbers. All from each suite are tested if unset")
+
+    parser.add_argument("-d", 
         help="specify the mode of display",
-        choices=["any", "shell", "gui"],
-        default="default")
+        choices=["any", "plain", "colored", "graphical"],
+        default="any")
+
     args = parser.parse_args()
+    return InitConfig(args.p, args.d, args.s, args.t)
 
-    using_tk = setup_stdio()
 
-    sequential_checks(
-        check_gcc_version,
-        check_git_version,
-        simple_compile,
-        compile_shared,
-        load_shared
-    )
 
-    if using_tk: 
-        sys.stdout.window.mainloop()
+INIT_CHECKS =[
+    check_gcc_version,
+    check_git_version,
+    # simple_compile,
+    # compile_shared,
+    # load_shared
+]
+
+TEST_SUITES=[
+    A1
+] 
+
+POST_CHECKS=[]
+
+def run_checker(config, checklist):
+    pass
+
+if __name__ == "__main__":
+    config = init_config()
+    run_checker(config, (INIT_CHECKS, TEST_SUITES, POST_CHECKS))
 
         
