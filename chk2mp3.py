@@ -1,11 +1,5 @@
 """
 MT2MP3 (student-made) code checker!
-
-Checks the following:
-- Code is found in the right files
-- Code compiles correctly
-- Code outputs correct results for certain test cases
-- Code is uploaded to GitLab
 """
 
 
@@ -44,18 +38,49 @@ except ImportError:
 from typing import *
 
 
+# Replaced with an actual interface later on
+interface = None
+
 
 def logE(s):
-    print("Error: " + str(s))
+    interface.logError(s)
 
 def logI(s):
-    print("Info: " + str(s))
+    interface.logInfo(s)
 
 def logP(s):
-    print("Pass: " + str(s))
+    interface.logPass(s)
 
 def logW(s):
-    print("Warn: " + str(s))
+    interface.logWarn(s)
+
+
+class PlainInterface:
+    def logError(self, s):
+        print("Error: " + str(s), file=sys.stderr)
+
+    def logInfo(self, s):
+        print("Info: " + str(s))
+
+    def logPass(self, s):
+        print("Pass: " + str(s))
+
+    def logWarn(self, s):
+        print("Warn: " + str(s))
+
+
+class ColoredInterface:
+    def logError(self, s):
+        print("\033[31m" + str(s) + "\033[0m")
+
+    def logInfo(self, s):
+        print("\033[34m" + str(s) + "\033[0m")
+
+    def logPass(self, s):
+        print("\033[35m" + str(s) + "\033[0m")
+
+    def logWarn(self, s):
+        print("\033[33m" + str(s) + "\033[0m")
 
 
 def check_gcc_version():
@@ -101,160 +126,6 @@ def check_git_version():
     v_line = gitv.stdout.decode().split("\n")[0].strip()
     logI(f"<{v_line}>")
     return True
-
-
-class ShellOut:
-
-    def __init__(self, stdout, wrapped) -> None:
-        self.stdout = stdout
-        self.wrapped = wrapped
-
-    def write(self, obj):
-        if type(obj) == str:
-            self.writestr(obj)
-        else:
-            self.writestr(str(obj))
-    
-    def writestr(self, s: str):
-        wrapper = None
-
-        if s.startswith("Info: "):
-            s = s[6:]
-            wrapper = "\033[34m"
-        elif s.startswith("Warn: "):
-            s = s[6:]
-            wrapper = "\033[33m"
-        elif s.startswith("Error: "):
-            s = s[7:]
-            wrapper = "\031[34m"
-        
-        if wrapper and self.wrapped:
-            s = wrapper + s + "\033[0m"
-        self.stdout.write(s)
-
-    def flush(self):
-        self.stdout.flush()
-
-
-class TkOut:
-    def __init__(self) -> None:
-        self.window = Tk()
-        self.window.title("2MP3 Code Checker")
-
-        win = self.window
-
-        frm = Frame(win)
-
-        options = [f"Assignment {i}" for i in range(1,8)]
-        svar = tkinter.StringVar(frm)
-        svar.set("Assignment 1")
-        self.selector = OptionMenu(frm, svar, *options)
-        self.selector.pack(side=LEFT)
-
-        options2 = ["All Questions"] + [f"Question {i}" for i in range(1,8)]
-        svar2 = tkinter.StringVar(frm)
-        svar2.set("All Questions")
-        self.selector2 = OptionMenu(frm, svar2, *options2)
-        self.selector2.pack(side=LEFT)
-
-        self.btn2 = Button(frm, text="Open Folder", command=self.open_folder)
-        self.btn2.pack(side=LEFT)
-
-        self.btn = Button(frm, text="Run Code Checker", command=self.check_code)
-        self.btn.pack(side=LEFT)
-        
-        frm.pack()
-        self.folder = Label(win, text=f"Project Folder: {os.getcwd()}")
-        self.folder.pack()
-
-
-        self.results = ScrolledText(self.window, width=80, height=24, selectbackground="lightgray")
-        self.results.pack()
-        self.results.tag_config("t_blue", foreground="blue")
-        self.results.tag_config("t_yellow", foreground="yellow")
-        self.results.tag_config("t_red", foreground="red")
-        self.results.tag_config("t_green", foreground="green")
-
-
-    def open_folder(self):
-        dir = askdirectory()
-        logI(f"Opened project folder {dir}")
-        return dir
-
-    def check_code(self):
-        logI("Checked the code!")
-    
-    def flush(self):
-        pass
-
-    def write(self, obj):
-        if type(obj) == str:
-            self.writestr(obj)
-        else:
-            self.writestr(str(obj))
-    
-    def writestr(self, s: str):
-        colour = None
-
-        if s.startswith("Info: "):
-            s = s[6:]
-            colour = "t_blue"
-        elif s.startswith("Warn: "):
-            s = s[6:]
-            colour = "t_yellow"
-        elif s.startswith("Error: "):
-            s = s[7:]
-            colour = "t_red"
-        elif s.startswith("Pass: "):
-            s = s[6:]
-            colour = "t_green"
-        
-        self.results.insert(END, s, colour)
-
-
-class EWrapper:
-    def __init__(self, stdout, stderr) -> None:
-        self.stdout = stdout
-        self.stderr = stderr
-
-    def flush(self):
-        self.stdout.flush()
-        self.stderr.flush()
-
-    def write(self, obj):
-        self.stdout.write(f"Error: {obj}")
-        self.stderr.write(obj)
-
-def sequential_checks(*funcs: Callable[..., bool]):
-    for func in funcs:
-        result = func()
-        if not result:
-            logE(f"Stopping at check <{func.__name__}>")
-            return
-    logP("All checks finished")
-
-
-def setup_stdio():
-    using_tk = False
-    new_stdout = None
-    if tk_lib_available:
-        try:
-            using_tk = True
-            new_stdout = TkOut()  # Use the graphical interface!!
-        except TclError:
-            pass
-    
-    if not using_tk:
-        if is_linux or is_wsl or is_mac:
-            new_stdout= ShellOut(sys.stdout, wrapped=True)
-        elif is_windows:
-            new_stdout = ShellOut(sys.stdout, wrapped=False)
-
-    if new_stdout:
-        sys.stdout = new_stdout
-        sys.stderr = EWrapper(new_stdout, sys.stderr)
-    
-    return using_tk
 
 
 def object_file_name(fpath: str) -> str:
@@ -346,8 +217,12 @@ def parse_signature(sig: str):
     if not re.match("\(()*\)", sig):
         return None
 
-
 class CFunction:
+    def __init__(self, file_args, func_signature) -> None:
+        self.file_args = file_args
+        self.func_signature = func_signature
+        self.name = ""
+
     def __enter__(self) :
         return self
 
@@ -362,10 +237,187 @@ class CFunction:
 
 class TestSuite:
     def __init__(self, name, path_format) -> None:
-        pass
+        self.name = name
+        self.path_format = path_format
+        self.funcs: List[CFunction] = []
 
     def func(self, file_args, func_signature):
-        return CFunction()
+        func = CFunction(file_args, func_signature)
+        self.funcs.append(func)
+        return func
+
+
+class ChecklistExecutor:
+    def __init__(self, config: "InitConfig", checklist: List[TestSuite]) -> None:
+        self.config = config
+        self.checklist = checklist
+
+    def run_tests(self, path, suites, tests):
+        pass
+
+    def run_configured(self):
+        self.run_tests(self.config.path, self.config.suites, self.config.tests)
+
+
+    def query_suites(self):
+        suites = self.checklist
+        names = []
+        for suite in suites:
+            names.append(suite.name)
+        return names
+
+    def query_funcs(self, index):
+        suite = self.checklist[index]
+        names = []
+        for func in suite.funcs:
+            names.append(func.name)
+        return names
+
+
+class TkInterface:
+    def __init__(self, executor: ChecklistExecutor) -> None:
+        self.executor = executor
+
+        self.window = Tk()
+        self.window.title("2MP3 Code Checker")
+
+        win = self.window
+
+        frm = Frame(win)
+
+        options = executor.query_suites()
+        svar = tkinter.StringVar(frm)
+        svar.set("Assignment 1")
+        self.selector = OptionMenu(frm, svar, *options)
+        self.selector.pack(side=LEFT)
+
+        options2 = ["All Questions"] + [f"Question {i}" for i in range(1,8)]
+        svar2 = tkinter.StringVar(frm)
+        svar2.set("All Questions")
+        self.selector2 = OptionMenu(frm, svar2, *options2)
+        self.selector2.pack(side=LEFT)
+
+        self.btn2 = Button(frm, text="Open Folder", command=self.open_folder)
+        self.btn2.pack(side=LEFT)
+
+        self.btn = Button(frm, text="Run Code Checker", command=self.check_code)
+        self.btn.pack(side=LEFT)
+        
+        frm.pack()
+        self.dir = executor.config.path;
+        self.foldervar = StringVar()
+        self.update_dir_label()
+        self.folder = Label(win, textvariable=self.foldervar)
+        self.folder.pack()
+
+
+        self.results = ScrolledText(self.window, width=80, height=24, selectbackground="lightgray")
+        self.results.pack()
+
+        self.results.tag_config("t_blue", foreground="blue")
+        self.results.tag_config("t_yellow", foreground="yellow")
+        self.results.tag_config("t_red", foreground="red")
+        self.results.tag_config("t_green", foreground="green")
+
+
+    def run_blocking(self):
+        mainloop()
+
+    
+    def update_dir_label(self):
+        self.foldervar.set(f"Project Folder: {self.dir}")
+
+    def open_folder(self):
+        self.dir = askdirectory()
+        if dir:
+            self.update_dir_label()
+            logI(f"Opened project folder {self.dir}")
+
+    def check_code(self):
+        logI("Checked the code!")
+
+
+    def __log(self, s, c):
+        self.results.insert(END, str(s)+"\n", c)
+
+    
+    def logInfo(self, s):
+        self.__log(s, "t_blue")
+
+    def logWarn(self, s):
+        self.__log(s, "t_yellow")
+
+    def logError(self, s):
+        self.__log(s, "t_red")
+
+    def logPass(self, s):
+        self.__log(s, "t_green")
+
+
+class InitConfig(NamedTuple):
+    path: str
+    display: str
+    suites: Optional[List[str]]
+    tests: Optional[List[int]]
+
+
+def init_config():
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument("-p", 
+        help="specify the root project directory, pwd if unset", metavar="PATH")
+
+    parser.add_argument("-s", metavar="SUITE", type=int, nargs="+",
+        help="specify the test suite numbers. All suites are tested if unset.")
+    parser.add_argument("-t", metavar="TEST", type=int, nargs="+",
+        help="specify the test numbers. All from each suite are tested if unset")
+
+    parser.add_argument("-d", 
+        help="specify the mode of display",
+        choices=["any", "plain", "colored", "graphical"],
+        default="any")
+
+    args = parser.parse_args()
+
+    if args.p:
+        definite_path = args.p
+    else:
+        definite_path = os.getcwd()
+
+    return InitConfig(definite_path, args.d, args.s, args.t)
+
+
+
+def run_checker(config: InitConfig, *checklist: TestSuite):
+    executor = ChecklistExecutor(config, checklist)
+
+    global interface
+
+    display = config.display
+    if display not in ["plain", "colored", "graphical"]:
+        if tk_lib_available:
+            display = "graphical"
+        else:
+            if is_linux or is_wsl or is_mac:
+                display = "colored"
+            else:
+                display = "plain"
+
+    if display == "graphical" and tk_lib_available:
+        try:
+            interface = TkInterface(executor)
+        except TclError:
+            interface = PlainInterface()
+        else:
+            interface.run_blocking()
+
+    elif display == "colored":
+        interface = ColoredInterface()
+        executor.run_configured()
+    else:
+        interface = PlainInterface()
+        executor.run_configured()
+
 
 
 DEFAULT_PATH_FORMAT = os.path.join("A1", "Q{0}","question{0}.c")
@@ -417,53 +469,8 @@ with A1.func(7, "void mileage (void)") as f:
     f.note("Not currently tested")
 
 
-class InitConfig(NamedTuple):
-    path: str
-    display: str
-    suites: Optional[List[str]]
-    tests: Optional[List[int]]
-
-
-def init_config():
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument("-p", 
-        help="specify the root project directory, pwd if unset", metavar="PATH")
-
-    parser.add_argument("-s", metavar="SUITE", type=int, nargs="+",
-        help="specify the test suite numbers. All suites are tested if unset.")
-    parser.add_argument("-t", metavar="TEST", type=int, nargs="+",
-        help="specify the test numbers. All from each suite are tested if unset")
-
-    parser.add_argument("-d", 
-        help="specify the mode of display",
-        choices=["any", "plain", "colored", "graphical"],
-        default="any")
-
-    args = parser.parse_args()
-    return InitConfig(args.p, args.d, args.s, args.t)
-
-
-
-INIT_CHECKS =[
-    check_gcc_version,
-    check_git_version,
-    # simple_compile,
-    # compile_shared,
-    # load_shared
-]
-
-TEST_SUITES=[
-    A1
-] 
-
-POST_CHECKS=[]
-
-def run_checker(config, checklist):
-    pass
 
 if __name__ == "__main__":
-    config = init_config()
-    run_checker(config, (INIT_CHECKS, TEST_SUITES, POST_CHECKS))
+    run_checker(init_config(), A1)
 
         
