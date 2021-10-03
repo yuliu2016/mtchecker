@@ -237,6 +237,7 @@ class GCCRunner(FunctionRunner):
 
         flags_join = " ".join(flags)
         logP(f"  [GCC] Compiled in {timeMS:.1f}ms with flags '{flags_join}'")
+        return True
 
 
 class TestFunction:
@@ -294,7 +295,7 @@ class ChecklistExecutor:
             logE("Test path not absolute")
             return None
 
-        tmp = os.path.join(path, "tmp/")
+        tmp = os.path.join(path, ".chk2mp3/")
         if os.path.isdir(tmp):
             shutil.rmtree(tmp)
         os.mkdir(tmp)
