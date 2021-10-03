@@ -16,16 +16,8 @@ import time
 import math
 import threading
 
-plat = platform.system()
-is_windows = plat == "Windows"
-is_mac = plat == "Darwin"
-is_linux = plat == "Linux"
+from typing import *
 
-# https://www.scivision.dev/python-detect-wsl/
-is_wsl = is_linux and "Microsoft" in platform.uname()
-
-
-# TKinter might not be available in Linux and WSL
 try:
     from tkinter import *
     from tkinter.scrolledtext import ScrolledText
@@ -36,7 +28,20 @@ except ImportError:
     ScrolledText, askdirectory = None, None
 
 
-from typing import *
+plat = platform.system()
+is_windows = plat == "Windows"
+is_mac = plat == "Darwin"
+is_linux = plat == "Linux"
+
+# https://www.scivision.dev/python-detect-wsl/
+is_wsl = is_linux and "Microsoft" in platform.uname()
+
+if is_windows:
+    EXECUTABLE_EXT = ".exe"
+    SHAREDLIB_EXT = ".dll"
+else:
+    EXECUTABLE_EXT = ""
+    SHAREDLIB_EXT = ".so"
 
 
 # Replaced with an actual interface later on
@@ -143,6 +148,9 @@ def center_text(s: str, w: int):
     if L > w: return s
     return " " * ((w - L) // 2) + s
 
+def indent_text(s:str, i):
+    return "\n".join(" "*i + x for x in s.splitlines())
+
 class CSignature(NamedTuple):
     ret_type: str
     name: str
@@ -184,6 +192,7 @@ class FunctionRunner:
     def configure_path(self, root, tmp):
         self.abs_path = os.path.join(root, self.file_subpath)
         self.tmp_path = pathlib.Path(tmp)
+        return True
 
     def exec_simple(self):
         pass
@@ -194,6 +203,7 @@ class GCCRunner(FunctionRunner):
         super().__init__(file_subpath, func_signature, args, kwargs)
         self.signature = parse_c_signature(func_signature)
         self.name = self.signature.name
+        self.source_path: Optional[pathlib.Path] = None
 
     def object_file_name(self, fpath: str):
         path = pathlib.Path(fpath)
@@ -206,16 +216,24 @@ class GCCRunner(FunctionRunner):
         else:
             return path.with_suffix(".o")
 
-    def exec_simple(self):
+    def configure_path(self, root, tmp):
+        super().configure_path(root, tmp)
+
         source_path = pathlib.Path(self.abs_path)
         if source_path.suffix != ".c":
             logE("Not Compiling a C file; Incompatible runner")
-            return
+            return False
         if not source_path.exists():
             logE("File to be compiled does not exist")
-            return
+            return False
 
         logA(f"Checking '{self.func_signature}' in '{source_path.name}'")
+        self.source_path = source_path
+        return True
+
+
+    def compile_object(self):
+        source_path = self.source_path
 
         stem = source_path.stem
         objfile = self.tmp_path / stem
@@ -231,13 +249,43 @@ class GCCRunner(FunctionRunner):
         t2 = time.perf_counter_ns()
         timeMS = (t2 - t1) / 1e6
 
+        err_out = compile_proc.stderr.decode()
+
         if compile_proc.returncode != 0:
-            logE(compile_proc.stderr.decode())
+            logE(indent_text(err_out, 2))
             return False
+
+        if err_out:
+            logW(indent_text(err_out.strip(), 2))
 
         flags_join = " ".join(flags)
         logP(f"  [GCC] Compiled in {timeMS:.1f}ms with flags '{flags_join}'")
         return True
+
+    def compile_shared(self):
+        source_path = self.source_path
+
+        stem = source_path.stem
+        sofile = (self.tmp_path / stem).with_suffix(SHAREDLIB_EXT)
+
+        command = ["gcc", "-shared", "-o", str(sofile), "-fPIC", str(source_path)]
+
+        compile_proc = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL)
+
+        if compile_proc.returncode != 0:
+            err_out = compile_proc.stderr.decode()
+            logE(indent_text(err_out, 2))
+            return False
+
+        logI("  [GCC] Recompiled function into a shared library")
+        return True
+
+
+    def exec_simple(self):
+        if not self.compile_object():
+            return
+        if not self.compile_shared():
+            return
 
 
 class TestFunction:
@@ -339,16 +387,16 @@ class ChecklistExecutor:
                 return
             total_steps += len(suite.funcs[test_no].steps)
 
-        logI("=" * 80)
+        logI("=" * 88)
         title = f"{suite.name} (Total: {len(tests)} Functions, {total_steps} Test Steps)"
-        logI(center_text(title, 80))
-        logI("=" * 80)
+        logI(center_text(title, 88))
+        logI("=" * 88)
 
         for test_no in tests:
             runner = suite.funcs[test_no]
-            runner.configure_path(path, tmp)
-            runner.exec_simple()
-            logI("")
+            if runner.configure_path(path, tmp):
+                runner.exec_simple()
+                logI("")
         
 
     def run_configured(self):
@@ -436,7 +484,7 @@ class TkInterface:
         self.folder.pack()
 
 
-        self.log = ScrolledText(self.window, width=80, height=32,
+        self.log = ScrolledText(self.window, width=88, height=32,
                                 selectbackground="lightgray", state=DISABLED)
         self.init_log()
 
@@ -449,7 +497,7 @@ class TkInterface:
         self.log.pack()
 
         self.log.tag_config("t_blue", foreground="blue")
-        self.log.tag_config("t_orange", foreground="orange")
+        self.log.tag_config("t_orange", foreground="#ff6000")
         self.log.tag_config("t_red", foreground="red")
         self.log.tag_config("t_green", foreground="darkgreen")
         self.log.tag_config("t_magenta", foreground="magenta")
