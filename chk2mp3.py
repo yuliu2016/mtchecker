@@ -3,7 +3,6 @@ MT2MP3 (student-made) code checker!
 """
 
 
-import ctypes
 import subprocess
 import os
 import sys
@@ -16,10 +15,10 @@ import pathlib
 import time
 import math
 
-p = platform.system()
-is_windows = p == "Windows"
-is_mac = p == "Darwin"
-is_linux = p == "Linux"
+plat = platform.system()
+is_windows = plat == "Windows"
+is_mac = plat == "Darwin"
+is_linux = plat == "Linux"
 
 # https://www.scivision.dev/python-detect-wsl/
 is_wsl = is_linux and "Microsoft" in platform.uname()
@@ -49,6 +48,9 @@ def logE(s):
 def logI(s):
     interface.logInfo(s)
 
+def logA(s):
+    interface.logAccent(s)
+
 def logP(s):
     interface.logPass(s)
 
@@ -64,7 +66,10 @@ class PlainInterface:
         print("Info: " + str(s))
 
     def logPass(self, s):
-        print("Pass: " + str(s))
+        self.logInfo(s)
+
+    def logAccent(self, s):
+        self.logInfo(s)
 
     def logWarn(self, s):
         print("Warn: " + str(s))
@@ -78,6 +83,9 @@ class ColoredInterface:
         print("\033[34m" + str(s) + "\033[0m")
 
     def logPass(self, s):
+        print("\033[32m" + str(s) + "\033[0m")
+
+    def logAccent(self, s):
         print("\033[35m" + str(s) + "\033[0m")
 
     def logWarn(self, s):
@@ -214,26 +222,104 @@ def load_shared(fpath="test"):
     return True
 
 
-def parse_signature(sig: str):
-    if not re.match("\(()*\)", sig):
-        return None
+def center_text(s: str, w: int):
+    L = len(s)
+    if L > w: return s
+    return " " * ((w - L) // 2) + s
 
+class CSignature(NamedTuple):
+    ret_type: str
+    name: str
+    arg_types: List[str]
+
+
+def parse_c_signature(sig: str):
+    # todo add a proper parser here
+    L, R = sig.split("(")
+    L = L.strip().split(" ")
+    R = R.strip().strip(")")
+    name = L[-1]
+    ret = " ".join(L[:-1])
+    A = R.split(",")
+    args = []
+    for arg_def in A:
+        sp = arg_def.split(" ")
+        args.append(" ".join(sp[:-1]))
+    return CSignature(ret, name, args)
+
+
+class TestResult(NamedTuple):
+    pass
 
 class FunctionRunner:
-    def __init__(self, file_path, func_signature, kwargs) -> None:
-        self.file_path = file_path
+    def __init__(self, file_subpath, func_signature, args, kwargs):
+        self.file_subpath = file_subpath
         self.func_signature = func_signature
+        self.args = args
         self.kwargs = kwargs
         self.name = ""
         self.steps = []
+        self.tmp_path: Optional[pathlib.Path] = None
+        self.abs_path = None
 
     def add_test_step(self, step_options):
         self.steps.append(step_options)
 
+    def configure_path(self, root, tmp):
+        self.abs_path = os.path.join(root, self.file_subpath)
+        self.tmp_path = pathlib.Path(tmp)
+
+    def exec_simple(self):
+        pass
+
 
 class GCCRunner(FunctionRunner):
-    def __init__(self, file_path, func_signature, kwargs) -> None:
-        super().__init__(file_path, func_signature, kwargs)
+    def __init__(self, file_subpath, func_signature, args, kwargs):
+        super().__init__(file_subpath, func_signature, args, kwargs)
+        self.signature = parse_c_signature(func_signature)
+
+    def object_file_name(self, fpath: str):
+        path = pathlib.Path(fpath)
+        if path.suffix != ".c":
+            logE("Not Compiling a C file")
+            return None
+
+        if is_windows:
+            return path.with_suffix(".exe")
+        else:
+            return path.with_suffix(".o")
+
+    def exec_simple(self):
+        source_path = pathlib.Path(self.abs_path)
+        if source_path.suffix != ".c":
+            logE("Not Compiling a C file; Incompatible runner")
+            return
+        if not source_path.exists():
+            logE("File to be compiled does not exist")
+            return
+
+        logA(f"Checking '{self.func_signature}' in '{source_path.name}'")
+
+        stem = source_path.stem
+        objfile = self.tmp_path / stem
+
+        flags = ["-Wall"]
+        if self.args:
+            flags.append(self.args)
+
+        command = ["gcc", *flags, "-o", str(objfile), str(source_path)]
+
+        t1 = time.perf_counter_ns()
+        compile_proc = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL)
+        t2 = time.perf_counter_ns()
+        timeMS = (t2 - t1) / 1e6
+
+        if compile_proc.returncode != 0:
+            logE(compile_proc.stderr.decode())
+            return False
+
+        flags_join = " ".join(flags)
+        logP(f"  [GCC] Compiled in {timeMS:.1f}ms with flags '{flags_join}'")
 
 
 class TestFunction:
@@ -256,7 +342,7 @@ class TestFunction:
 CHECKLIST: "List[TestSuite]" = []
 
 class TestSuite:
-    def __init__(self, name: str, path_format: str, add_to_checklist=True) -> None:
+    def __init__(self, name: str, path_format: str, add_to_checklist=True):
         self.name = name
         self.path_format = path_format
         self.funcs: List[FunctionRunner] = []
@@ -266,36 +352,85 @@ class TestSuite:
 
     def func(self,
         file_arg: Union[int, str], 
-        func_signature: str, 
+        func_signature: str,
+        args: str = "",
         runner: Type[FunctionRunner]=GCCRunner, 
         **kwargs):
 
         file_path = self.path_format.format(file_arg)
 
-        runner_inst = runner(file_path, func_signature, kwargs)
+        runner_inst = runner(file_path, func_signature, args, kwargs)
         func = TestFunction(runner_inst)
         self.funcs.append(runner_inst)
         return func
 
 
 class ChecklistExecutor:
-    def __init__(self, config: "InitConfig", checklist: List[TestSuite]) -> None:
+    def __init__(self, config: "InitConfig", checklist: List[TestSuite]):
         self.config = config
         self.checklist = checklist
+        self.prelim_checked = False
+        self.prev_path = None
 
-    def run_tests(self, path: str, suite_no: Optional[int], tests: Optional[List[int]]):
+    def check_paths(self, path: str):
         if not os.path.isabs(path):
             logE("Test path not absolute")
-            return
-        
-        tmp = os.path.join(path, "tmp/")
+            return None
 
-        if not suite_no:
-            suite_no = len(self.checklist) - 1
-        suite = self.checklist[suite_no]
+        tmp = os.path.join(path, "tmp/")
+        if os.path.isdir(tmp):
+            shutil.rmtree(tmp)
+        os.mkdir(tmp)
+        return tmp
+
+    def run_prelim_checks(self, path):
+        if self.prelim_checked and path == self.prev_path:
+            return True
+        self.prev_path = None
+
+        if not check_gcc_version() or not check_git_version():
+            return False
+        self.prelim_checked = True
+        self.prev_path = path
+        return True
+
+    def run_tests(self, path: str, suite_no: Optional[int], tests: Optional[List[int]]):
+        tmp = self.check_paths(path)
+        if not tmp:
+            return
+
+        if not self.run_prelim_checks(path):
+            return
+
+        if suite_no:
+            if 0 <= suite_no < len(self.checklist):
+                suite = self.checklist[suite_no]
+            else:
+                logE(f"Invalid suite number to run: {suite_no}")
+                return
+        else:
+            suite = self.checklist[-1]
 
         if not tests:
             tests = range(len(suite.funcs))
+
+        total_steps = 0
+        for test_no in tests:
+            if not (0 <= test_no < len(suite.funcs)):
+                logE(f"Invalid test number {test_no}. Aborting...")
+                return
+            total_steps += len(suite.funcs[test_no].steps)
+
+        logI("=" * 80)
+        title = f"{suite.name} (Total: {len(tests)} Functions, {total_steps} Test Steps)"
+        logI(center_text(title, 80))
+        logI("=" * 80)
+
+        for test_no in tests:
+            runner = suite.funcs[test_no]
+            runner.configure_path(path, tmp)
+            runner.exec_simple()
+            logI("")
         
 
     def run_configured(self):
@@ -318,13 +453,14 @@ class ChecklistExecutor:
 
 
 class TkInterface:
-    def __init__(self, executor: ChecklistExecutor) -> None:
+    def __init__(self, executor: ChecklistExecutor):
         self.executor = executor
 
         self.window = Tk()
         self.window.title("2MP3 Code Checker")
 
         win = self.window
+        win.resizable(False, False)
 
         frm = Frame(win)
 
@@ -345,7 +481,7 @@ class TkInterface:
 
         self.btn = Button(frm, text="Run Code Checker", command=self.check_code)
         self.btn.pack(side=LEFT)
-        
+
         frm.pack()
         self.dir = executor.config.path
         self.foldervar = StringVar()
@@ -354,19 +490,21 @@ class TkInterface:
         self.folder.pack()
 
 
-        self.results = ScrolledText(self.window, width=80, height=24, selectbackground="lightgray")
+        self.results = ScrolledText(self.window, width=80, height=32,
+                selectbackground="lightgray", state=DISABLED)
         self.results.pack()
 
         self.results.tag_config("t_blue", foreground="blue")
-        self.results.tag_config("t_yellow", foreground="yellow")
+        self.results.tag_config("t_orange", foreground="orange")
         self.results.tag_config("t_red", foreground="red")
-        self.results.tag_config("t_green", foreground="green")
+        self.results.tag_config("t_green", foreground="darkgreen")
+        self.results.tag_config("t_magenta", foreground="magenta")
 
 
     def run_blocking(self):
-        mainloop()
+        self.window.mainloop()
 
-    
+
     def update_dir_label(self):
         self.foldervar.set(f"Project Folder: {self.dir}")
 
@@ -377,18 +515,21 @@ class TkInterface:
             logI(f"Opened project folder {self.dir}")
 
     def check_code(self):
-        logI("Checked the code!")
+        self.executor.run_configured()
+        # todo self.executor.run_tests()
 
 
     def __log(self, s, c):
+        self.results.configure(state=NORMAL)
         self.results.insert(END, str(s)+"\n", c)
+        self.results.configure(state=DISABLED)
 
-    
+
     def logInfo(self, s):
         self.__log(s, "t_blue")
 
     def logWarn(self, s):
-        self.__log(s, "t_yellow")
+        self.__log(s, "t_orange")
 
     def logError(self, s):
         self.__log(s, "t_red")
@@ -396,9 +537,12 @@ class TkInterface:
     def logPass(self, s):
         self.__log(s, "t_green")
 
+    def logAccent(self, s):
+        self.__log(s, "t_magenta")
+
 
 class InitConfig(NamedTuple):
-    path: str
+    path: str  # Must be the absolute path
     display: str
     suite_no: Optional[int]
     tests: Optional[List[int]]
@@ -423,7 +567,7 @@ def init_config():
     args = parser.parse_args()
 
     if args.p:
-        definite_path = args.p
+        definite_path = os.path.abspath(args.p)
     else:
         definite_path = os.getcwd()
 
@@ -477,7 +621,7 @@ with A1.func(1, "int minutes (int m, int h, int d)") as f:
     f.test(args=(0,0,0), expect=0)
     
 
-with A1.func(2, "float onethird (int n)") as f:
+with A1.func(2, "float onethird (int n)", "-lm") as f:
     f.test(args=(1,), expect=1.000000, threshold=1e-6)
     f.test(args=(10,), expect=0.385000, threshold=1e-6)
     f.test(args=(9999,), expect=0.333383, threshold=1e-6)
@@ -488,7 +632,7 @@ with A1.func(3, "int multiples (int x, int y, int N)") as f:
     f.test(args=(32,14,10), expect=0)
     f.test(args=(11,15,20), expect=26)
 
-with A1.func(4, "float compoundInterest (float p, int a, int n)") as f:
+with A1.func(4, "float compoundInterest (float p, int a, int n)", "-lm") as f:
     f.test(args=(0.05,20,5), expect=25.53, threshold=1e-3)
     f.test(args=(0.10,910,3), expect=1211.21, threshold=1e-3)
     f.test(args=(0.06,800,2), expect=898.88, threshold=1e-3)
