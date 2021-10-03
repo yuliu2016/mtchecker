@@ -3,6 +3,7 @@ build/*
 dist/*
 .vscode/*
 .history/*
+.idea/*
 
 *.spec
 *.txt

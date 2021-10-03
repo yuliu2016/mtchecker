@@ -33,13 +33,14 @@ try:
     tk_lib_available = True
 except ImportError:
     tk_lib_available = False
+    ScrolledText, askdirectory = None, None
 
 
 from typing import *
 
 
 # Replaced with an actual interface later on
-interface = None
+interface: Optional["PlainInterface"] = None
 
 
 def logE(s):
@@ -84,7 +85,7 @@ class ColoredInterface:
 
 
 def check_gcc_version():
-    gcc_path = shutil.which("gcc");
+    gcc_path = shutil.which("gcc")
     if not gcc_path:
         logE("GCC is not found. Did you install it?")
         return False
@@ -111,7 +112,7 @@ def check_gcc_version():
 
 
 def check_git_version():
-    git_path = shutil.which("git");
+    git_path = shutil.which("git")
     if not git_path:
         logE("Git is not found. Did you install it?")
         return False
@@ -121,14 +122,14 @@ def check_git_version():
         capture_output=True, stdin=subprocess.DEVNULL)
 
     if gitv.returncode != 0:
-        logE()("git might be broken")
+        logE("git might be broken")
     
     v_line = gitv.stdout.decode().split("\n")[0].strip()
     logI(f"<{v_line}>")
     return True
 
 
-def object_file_name(fpath: str) -> str:
+def object_file_name(fpath: str):
     path = pathlib.Path(fpath)
     if path.suffix != ".c":
         logE("Not Compiling a C file")
@@ -162,7 +163,7 @@ def simple_compile(fpath="test.c"):
     return True
 
 
-def shared_lib_file_name(fpath: str) -> str:
+def shared_lib_file_name(fpath: str):
     path = pathlib.Path(fpath)
     if path.suffix != ".c":
         logE("Not Compiling a C file")
@@ -217,11 +218,27 @@ def parse_signature(sig: str):
     if not re.match("\(()*\)", sig):
         return None
 
-class CFunction:
-    def __init__(self, file_args, func_signature) -> None:
-        self.file_args = file_args
+
+class FunctionRunner:
+    def __init__(self, file_path, func_signature, kwargs) -> None:
+        self.file_path = file_path
         self.func_signature = func_signature
+        self.kwargs = kwargs
         self.name = ""
+        self.steps = []
+
+    def add_test_step(self, step_options):
+        self.steps.append(step_options)
+
+
+class GCCRunner(FunctionRunner):
+    def __init__(self, file_path, func_signature, kwargs) -> None:
+        super().__init__(file_path, func_signature, kwargs)
+
+
+class TestFunction:
+    def __init__(self, runner) -> None:
+        self.__runner = runner
 
     def __enter__(self) :
         return self
@@ -229,21 +246,35 @@ class CFunction:
     def __exit__(self, *exc_info):
         pass
 
-    def test(self, args, expect, threshold=None):
-        pass
+    def test(self, **kwargs):
+        self.__runner.add_test_step(kwargs)
 
     def note(self, msg):
-        pass
+        self.test(msg=msg)
+
+
+CHECKLIST: "List[TestSuite]" = []
 
 class TestSuite:
-    def __init__(self, name, path_format) -> None:
+    def __init__(self, name: str, path_format: str, add_to_checklist=True) -> None:
         self.name = name
         self.path_format = path_format
-        self.funcs: List[CFunction] = []
+        self.funcs: List[FunctionRunner] = []
 
-    def func(self, file_args, func_signature):
-        func = CFunction(file_args, func_signature)
-        self.funcs.append(func)
+        if add_to_checklist:
+            CHECKLIST.append(self)
+
+    def func(self,
+        file_arg: Union[int, str], 
+        func_signature: str, 
+        runner: Type[FunctionRunner]=GCCRunner, 
+        **kwargs):
+
+        file_path = self.path_format.format(file_arg)
+
+        runner_inst = runner(file_path, func_signature, kwargs)
+        func = TestFunction(runner_inst)
+        self.funcs.append(runner_inst)
         return func
 
 
@@ -252,11 +283,23 @@ class ChecklistExecutor:
         self.config = config
         self.checklist = checklist
 
-    def run_tests(self, path, suites, tests):
-        pass
+    def run_tests(self, path: str, suite_no: Optional[int], tests: Optional[List[int]]):
+        if not os.path.isabs(path):
+            logE("Test path not absolute")
+            return
+        
+        tmp = os.path.join(path, "tmp/")
+
+        if not suite_no:
+            suite_no = len(self.checklist) - 1
+        suite = self.checklist[suite_no]
+
+        if not tests:
+            tests = range(len(suite.funcs))
+        
 
     def run_configured(self):
-        self.run_tests(self.config.path, self.config.suites, self.config.tests)
+        self.run_tests(self.config.path, self.config.suite_no, self.config.tests)
 
 
     def query_suites(self):
@@ -304,7 +347,7 @@ class TkInterface:
         self.btn.pack(side=LEFT)
         
         frm.pack()
-        self.dir = executor.config.path;
+        self.dir = executor.config.path
         self.foldervar = StringVar()
         self.update_dir_label()
         self.folder = Label(win, textvariable=self.foldervar)
@@ -357,7 +400,7 @@ class TkInterface:
 class InitConfig(NamedTuple):
     path: str
     display: str
-    suites: Optional[List[str]]
+    suite_no: Optional[int]
     tests: Optional[List[int]]
 
 
@@ -367,8 +410,8 @@ def init_config():
     parser.add_argument("-p", 
         help="specify the root project directory, pwd if unset", metavar="PATH")
 
-    parser.add_argument("-s", metavar="SUITE", type=int, nargs="+",
-        help="specify the test suite numbers. All suites are tested if unset.")
+    parser.add_argument("-s", metavar="SUITE", type=int,
+        help="specify the test suite number. Last suite tested if unset.")
     parser.add_argument("-t", metavar="TEST", type=int, nargs="+",
         help="specify the test numbers. All from each suite are tested if unset")
 
@@ -388,8 +431,9 @@ def init_config():
 
 
 
-def run_checker(config: InitConfig, *checklist: TestSuite):
-    executor = ChecklistExecutor(config, checklist)
+def run_checker():
+    config = init_config()
+    executor = ChecklistExecutor(config, CHECKLIST)
 
     global interface
 
@@ -471,6 +515,4 @@ with A1.func(7, "void mileage (void)") as f:
 
 
 if __name__ == "__main__":
-    run_checker(init_config(), A1)
-
-        
+    run_checker()
