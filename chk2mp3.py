@@ -14,6 +14,7 @@ import argparse
 import pathlib
 import time
 import math
+import threading
 
 plat = platform.system()
 is_windows = plat == "Windows"
@@ -137,91 +138,6 @@ def check_git_version():
     return True
 
 
-def object_file_name(fpath: str):
-    path = pathlib.Path(fpath)
-    if path.suffix != ".c":
-        logE("Not Compiling a C file")
-        return None
-    
-    if is_windows:
-        return path.with_suffix(".exe")
-    else:
-        return path.with_suffix(".o")
-
-
-def simple_compile(fpath="test.c"):
-    if not os.path.isfile(fpath):
-        logE("Compiled file does not exist")
-        return
-    objfile = object_file_name(fpath)
-    if not objfile:
-        return
-
-    t1 = time.perf_counter_ns()
-    compile_proc = subprocess.run(
-        ["gcc", "-o", objfile, fpath, "-lm"],
-        capture_output=True)
-    t2 = time.perf_counter_ns()
-    if compile_proc.returncode != 0:
-        logE(compile_proc.stderr.decode())
-        return False
-    
-    timeMS = (t2 - t1) / 1e6
-    logP(f"{fpath} compiled into an executable in {timeMS:.1f}ms!")
-    return True
-
-
-def shared_lib_file_name(fpath: str):
-    path = pathlib.Path(fpath)
-    if path.suffix != ".c":
-        logE("Not Compiling a C file")
-        return None
-    
-    if is_windows:
-        return path.with_suffix(".dll")
-    else:
-        return path.with_suffix(".so")
-
-
-def compile_shared(fpath="test.c"):
-    # https://stackoverflow.com/questions/14884126/build-so-file-from-c-file-using-gcc-command-line
-
-    if not os.path.isfile(fpath):
-        logE("Compiled file does not exist")
-        return
-    sofile = shared_lib_file_name(fpath)
-    if not sofile:
-        return
-
-    t1 = time.perf_counter_ns()
-    compile_proc = subprocess.run(
-        ["gcc", "-shared", "-o", sofile, "-fPIC", fpath],
-        capture_output=True)
-    t2 = time.perf_counter_ns()
-    if compile_proc.returncode != 0:
-        logE(compile_proc.stderr.decode())
-        return False
-    
-    timeMS = (t2 - t1) / 1e6
-    logP(f"{fpath} compiled into a shared library in {timeMS:.1f}ms!")
-    return True
-
-
-def load_shared(fpath="test"):
-    path = pathlib.Path(fpath)
-
-    if is_windows:
-        path = path.with_suffix(".dll")
-    else:
-        path = path.with_suffix(".so")
-
-    dbr = ctypes.CDLL(str(path.resolve()))
-    a = ctypes.c_int(68)
-    b = dbr.plus_one(a)
-    print(b)
-    return True
-
-
 def center_text(s: str, w: int):
     L = len(s)
     if L > w: return s
@@ -277,6 +193,7 @@ class GCCRunner(FunctionRunner):
     def __init__(self, file_subpath, func_signature, args, kwargs):
         super().__init__(file_subpath, func_signature, args, kwargs)
         self.signature = parse_c_signature(func_signature)
+        self.name = self.signature.name
 
     def object_file_name(self, fpath: str):
         path = pathlib.Path(fpath)
@@ -452,6 +369,31 @@ class ChecklistExecutor:
         return names
 
 
+class ThreadSafeItemStore:
+    # https://stackoverflow.com/questions/16745507/tkinter-how-to-use-threads-to-preventing-main-event-loop-from-freezing
+    # https://stackoverflow.com/questions/156360/get-all-items-from-thread-queue
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.items = []
+
+    def add(self, item):
+        with self.cond:
+            self.items.append(item)
+            self.cond.notify()  # Wake 1 thread waiting on cond (if any)
+
+    def getAll(self, blocking=False):
+        with self.cond:
+            # If blocking is true, always return at least 1 item
+            while blocking and len(self.items) == 0:
+                self.cond.wait()
+            items, self.items = self.items, []
+        return items
+
+    def clear(self):
+        self.items = []
+
+
 class TkInterface:
     def __init__(self, executor: ChecklistExecutor):
         self.executor = executor
@@ -470,17 +412,20 @@ class TkInterface:
         self.selector = OptionMenu(frm, svar, *options)
         self.selector.pack(side=LEFT)
 
-        options2 = ["All Questions"] + [f"Question {i}" for i in range(1,8)]
+        options2 =["All Functions"] + executor.query_funcs(0) # + [f"Question {i}" for i in range(1,8)]
         svar2 = tkinter.StringVar(frm)
-        svar2.set("All Questions")
+        svar2.set("All Functions")
         self.selector2 = OptionMenu(frm, svar2, *options2)
         self.selector2.pack(side=LEFT)
 
-        self.btn2 = Button(frm, text="Open Folder", command=self.open_folder)
-        self.btn2.pack(side=LEFT)
+        btn2 = Button(frm, text="Open Folder", command=self.open_folder)
+        btn2.pack(side=LEFT)
 
-        self.btn = Button(frm, text="Run Code Checker", command=self.check_code)
-        self.btn.pack(side=LEFT)
+        btn = Button(frm, text="Run Code Checker", command=self.check_code)
+        btn.pack(side=LEFT)
+
+        btn3 = Button(frm, text="Clear Window", command=self.clear_log)
+        btn3.pack(side=LEFT)
 
         frm.pack()
         self.dir = executor.config.path
@@ -490,20 +435,26 @@ class TkInterface:
         self.folder.pack()
 
 
-        self.results = ScrolledText(self.window, width=80, height=32,
-                selectbackground="lightgray", state=DISABLED)
-        self.results.pack()
+        self.log = ScrolledText(self.window, width=80, height=32,
+                                selectbackground="lightgray", state=DISABLED)
+        self.init_log()
 
-        self.results.tag_config("t_blue", foreground="blue")
-        self.results.tag_config("t_orange", foreground="orange")
-        self.results.tag_config("t_red", foreground="red")
-        self.results.tag_config("t_green", foreground="darkgreen")
-        self.results.tag_config("t_magenta", foreground="magenta")
+        # Threading Objects
+        self.log_queue = ThreadSafeItemStore()
+        self.thread: Optional[threading.Thread] = None
 
+
+    def init_log(self):
+        self.log.pack()
+
+        self.log.tag_config("t_blue", foreground="blue")
+        self.log.tag_config("t_orange", foreground="orange")
+        self.log.tag_config("t_red", foreground="red")
+        self.log.tag_config("t_green", foreground="darkgreen")
+        self.log.tag_config("t_magenta", foreground="magenta")
 
     def run_blocking(self):
         self.window.mainloop()
-
 
     def update_dir_label(self):
         self.foldervar.set(f"Project Folder: {self.dir}")
@@ -515,30 +466,54 @@ class TkInterface:
             logI(f"Opened project folder {self.dir}")
 
     def check_code(self):
+        if self.thread is not None:
+            logW("There is still a process running! Wait until it finishes")
+            return
+        self.log_queue.clear()
+        self.thread = threading.Thread(target=self.check_code_new_thread)
+        self.thread.start()
+        self.window.after(100, self.process_log_queue)
+
+    def check_code_new_thread(self):
         self.executor.run_configured()
         # todo self.executor.run_tests()
+        self.thread = None
 
+    def clear_log(self):
+        self.log.configure(state=NORMAL)
+        self.log.delete("1.0", END)
+        self.log.configure(state=DISABLED)
 
-    def __log(self, s, c):
-        self.results.configure(state=NORMAL)
-        self.results.insert(END, str(s)+"\n", c)
-        self.results.configure(state=DISABLED)
+    def process_log_queue(self):
+        # Runs on tk thread
+        to_be_processed = self.log_queue.getAll(blocking=False)
 
+        if to_be_processed:
+            self.log.configure(state=NORMAL)
+            for s, c in to_be_processed:
+                self.log.insert(END, s, c)
+            self.log.configure(state=DISABLED)
+
+        if self.thread:
+            self.window.after(100, self.process_log_queue)
+
+    def __unsafe_log(self, s, c):
+        self.log_queue.add((str(s) + "\n", c))
 
     def logInfo(self, s):
-        self.__log(s, "t_blue")
+        self.__unsafe_log(s, "t_blue")
 
     def logWarn(self, s):
-        self.__log(s, "t_orange")
+        self.__unsafe_log(s, "t_orange")
 
     def logError(self, s):
-        self.__log(s, "t_red")
+        self.__unsafe_log(s, "t_red")
 
     def logPass(self, s):
-        self.__log(s, "t_green")
+        self.__unsafe_log(s, "t_green")
 
     def logAccent(self, s):
-        self.__log(s, "t_magenta")
+        self.__unsafe_log(s, "t_magenta")
 
 
 class InitConfig(NamedTuple):
