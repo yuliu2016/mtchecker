@@ -46,7 +46,7 @@ else:
 
 # Replaced with an actual interface later on
 interface: Optional["PlainInterface"] = None
-
+CONSOLE_WIDTH = 80
 
 def logE(s):
     interface.logError(s)
@@ -65,11 +65,12 @@ def logW(s):
 
 
 class PlainInterface:
+
     def logError(self, s):
-        print("Error: " + str(s), file=sys.stderr)
+        print(str(s), file=sys.stderr)
 
     def logInfo(self, s):
-        print("Info: " + str(s))
+        print(str(s))
 
     def logPass(self, s):
         self.logInfo(s)
@@ -78,24 +79,29 @@ class PlainInterface:
         self.logInfo(s)
 
     def logWarn(self, s):
-        print("Warn: " + str(s))
+        self.logInfo(s)
 
 
 class ColoredInterface:
+
+    def _print(self, s, c):
+        if not s: print()
+        else: print(c + str(s) + "\033[0m")
+
     def logError(self, s):
-        print("\033[31m" + str(s) + "\033[0m")
+        self._print(s, "\033[31m")
 
     def logInfo(self, s):
-        print("\033[34m" + str(s) + "\033[0m")
+        self._print(s, "\033[36m")
 
     def logPass(self, s):
-        print("\033[32m" + str(s) + "\033[0m")
+        self._print(s, "\033[32m")
 
     def logAccent(self, s):
-        print("\033[35m" + str(s) + "\033[0m")
+        self._print(s, "\033[35m")
 
     def logWarn(self, s):
-        print("\033[33m" + str(s) + "\033[0m")
+        self._print(s, "\033[33m")
 
 
 def check_gcc_version():
@@ -308,12 +314,12 @@ class TestFunction:
 CHECKLIST: "List[TestSuite]" = []
 
 class TestSuite:
-    def __init__(self, name: str, path_format: str, add_to_checklist=True):
+    def __init__(self, name: str, path_format: str, add_to_global_checklist=True):
         self.name = name
         self.path_format = path_format
         self.funcs: List[FunctionRunner] = []
 
-        if add_to_checklist:
+        if add_to_global_checklist:
             CHECKLIST.append(self)
 
     def func(self,
@@ -332,24 +338,38 @@ class TestSuite:
 
 
 class ChecklistExecutor:
+
+    # noinspection PyTypeChecker
     def __init__(self, config: "InitConfig", checklist: List[TestSuite]):
         self.config = config
         self.checklist = checklist
+
         self.prelim_checked = False
         self.prev_path = None
 
-    def check_paths(self, path: str):
+        # Variables only set during test execution
+
+        self._path: str = ""
+        self._tmp_dir: str = ""
+        self._suite: TestSuite = None
+        self._total_steps = 0
+        self._tests: List[int] = []
+
+    def create_tmp_dir(self, path: str):
         if not os.path.isabs(path):
             logE("Test path not absolute")
-            return None
+            return False
 
         tmp = os.path.join(path, ".chk2mp3/")
         if os.path.isdir(tmp):
             shutil.rmtree(tmp)
         os.mkdir(tmp)
-        return tmp
 
-    def run_prelim_checks(self, path):
+        self._tmp_dir = tmp
+        self._path = path
+        return True
+
+    def check_installs_once(self, path):
         if self.prelim_checked and path == self.prev_path:
             return True
         self.prev_path = None
@@ -360,48 +380,64 @@ class ChecklistExecutor:
         self.prev_path = path
         return True
 
-    def run_tests(self, path: str, suite_no: Optional[int], tests: Optional[List[int]]):
-        tmp = self.check_paths(path)
-        if not tmp:
-            return
-
-        if not self.run_prelim_checks(path):
-            return
-
+    def check_suite_and_tests(self, suite_no: Optional[int], tests: Optional[List[int]]):
         if suite_no:
             if 0 <= suite_no < len(self.checklist):
-                suite = self.checklist[suite_no]
+                self._suite = self.checklist[suite_no]
             else:
                 logE(f"Invalid suite number to run: {suite_no}")
-                return
+                return False
         else:
-            suite = self.checklist[-1]
+            self._suite = self.checklist[-1]
 
         if not tests:
-            tests = range(len(suite.funcs))
+            tests = range(len(self._suite.funcs))
 
-        total_steps = 0
+        self._total_steps = 0
+
         for test_no in tests:
-            if not (0 <= test_no < len(suite.funcs)):
+            if not (0 <= test_no < len(self._suite.funcs)):
                 logE(f"Invalid test number {test_no}. Aborting...")
-                return
-            total_steps += len(suite.funcs[test_no].steps)
+                return False
+            self._total_steps += len(self._suite.funcs[test_no].steps)
 
-        logI("=" * 88)
-        title = f"{suite.name} (Total: {len(tests)} Functions, {total_steps} Test Steps)"
-        logI(center_text(title, 88))
-        logI("=" * 88)
+        self._tests = tests
 
-        for test_no in tests:
-            runner = suite.funcs[test_no]
-            if runner.configure_path(path, tmp):
+        return True
+
+    def _checked_run(self):
+        self.print_title()
+
+        for test_no in self._tests:
+            runner = self._suite.funcs[test_no]
+            if runner.configure_path(self._path, self._tmp_dir):
                 runner.exec_simple()
                 logI("")
-        
+
+    def print_title(self):
+        logI("=" * CONSOLE_WIDTH)
+        title = f"{self._suite.name} (Total: " \
+                f"{len(self._tests)} Functions, {self._total_steps} Test Steps)"
+        logI(center_text(title, CONSOLE_WIDTH))
+        logI("=" * CONSOLE_WIDTH)
+
+    def cleanup(self):
+        if not self.config.debug:
+            shutil.rmtree(self._tmp_dir)
+        logP("Cleaned up temporary directory")
+
+    def run_tests(self, path: str, suite_no: Optional[int], tests: Optional[List[int]]):
+        if not self.check_suite_and_tests(suite_no, tests): return
+        if not self.check_installs_once(path): return
+        if not self.create_tmp_dir(path): return
+
+        try:
+            self._checked_run()
+        finally:
+            self.cleanup()
 
     def run_configured(self):
         self.run_tests(self.config.path, self.config.suite_no, self.config.tests)
-
 
     def query_suites(self):
         suites = self.checklist
@@ -445,6 +481,9 @@ class ThreadSafeItemStore:
 
 class TkInterface:
     def __init__(self, executor: ChecklistExecutor):
+        global CONSOLE_WIDTH
+        CONSOLE_WIDTH = 88
+
         self.executor = executor
 
         self.window = Tk()
@@ -461,7 +500,7 @@ class TkInterface:
         self.selector = OptionMenu(frm, svar, *options)
         self.selector.pack(side=LEFT)
 
-        options2 =["All Functions"] + executor.query_funcs(0) # + [f"Question {i}" for i in range(1,8)]
+        options2 =["All Functions"] + executor.query_funcs(0)
         svar2 = tkinter.StringVar(frm)
         svar2.set("All Functions")
         self.selector2 = OptionMenu(frm, svar2, *options2)
@@ -567,9 +606,10 @@ class TkInterface:
 
 class InitConfig(NamedTuple):
     path: str  # Must be the absolute path
-    display: str
+    display_mode: str
     suite_no: Optional[int]
     tests: Optional[List[int]]
+    debug: bool
 
 
 def init_config():
@@ -579,14 +619,18 @@ def init_config():
         help="specify the root project directory, pwd if unset", metavar="PATH")
 
     parser.add_argument("-s", metavar="SUITE", type=int,
-        help="specify the test suite number. Last suite tested if unset.")
+        help="specify the test suite (i.e. assignment) number. Last suite tested if unset.")
     parser.add_argument("-t", metavar="TEST", type=int, nargs="+",
         help="specify the test numbers. All from each suite are tested if unset")
 
-    parser.add_argument("-d", 
-        help="specify the mode of display",
+    parser.add_argument("-m",
+        help="specify the mode of presentation",
         choices=["any", "plain", "colored", "graphical"],
         default="any")
+
+    parser.add_argument("-d",
+        help="turn on debug mode (keeps temp folder)",
+        action="store_true")
 
     args = parser.parse_args()
 
@@ -595,7 +639,7 @@ def init_config():
     else:
         definite_path = os.getcwd()
 
-    return InitConfig(definite_path, args.d, args.s, args.t)
+    return InitConfig(definite_path, args.m, args.s, args.t, args.d)
 
 
 
@@ -605,7 +649,7 @@ def run_checker():
 
     global interface
 
-    display = config.display
+    display = config.display_mode
     if display not in ["plain", "colored", "graphical"]:
         if tk_lib_available:
             display = "graphical"
