@@ -15,6 +15,7 @@ import pathlib
 import time
 import math
 import threading
+import signal
 
 from typing import *
 
@@ -181,6 +182,13 @@ def parse_c_signature(sig: str):
 class TestResult(NamedTuple):
     pass
 
+class TestTransform:
+    pass
+
+class CTestTransform:
+    pass
+
+
 class FunctionRunner:
     def __init__(self, file_subpath, func_signature, args, kwargs):
         self.file_subpath = file_subpath
@@ -191,9 +199,20 @@ class FunctionRunner:
         self.steps = []
         self.tmp_path: Optional[pathlib.Path] = None
         self.abs_path = None
+        self.next_transform: Optional[TestTransform] = None
 
-    def add_test_step(self, step_options):
-        self.steps.append(step_options)
+    def add_test_step(self, step_args):
+        # Filter out empty/stub tests
+        if step_args:
+            if self.next_transform:
+                t = self.next_transform
+            else:
+                t = None
+            self.steps.append((t, step_args))
+
+
+    def set_test_transform(self, transform, fmt, kwargs):
+        self.next_transform = transform(fmt, kwargs)
 
     def configure_path(self, root, tmp):
         self.abs_path = os.path.join(root, self.file_subpath)
@@ -298,17 +317,18 @@ class TestFunction:
     def __init__(self, runner) -> None:
         self.__runner = runner
 
+
     def __enter__(self) :
         return self
 
     def __exit__(self, *exc_info):
         pass
 
+    def set_format(self, fmt, transform: Type[TestTransform]=CTestTransform, **kwargs):
+        self.__runner.set_test_transform(transform, fmt, kwargs)
+
     def test(self, **kwargs):
         self.__runner.add_test_step(kwargs)
-
-    def note(self, msg):
-        self.test(msg=msg)
 
 
 CHECKLIST: "List[TestSuite]" = []
@@ -326,7 +346,7 @@ class TestSuite:
         file_arg: Union[int, str], 
         func_signature: str,
         args: str = "",
-        runner: Type[FunctionRunner]=GCCRunner, 
+        runner: Type[FunctionRunner]=GCCRunner,
         **kwargs):
 
         file_path = self.path_format.format(file_arg)
@@ -722,7 +742,7 @@ with A1.func(6, "int FactorialDoWhile (int n)") as f:
     f.test(args=(10,), expect=3628800)
 
 with A1.func(7, "void mileage (void)") as f:
-    f.note("Not currently tested")
+    f.test()
 
 
 A2 = TestSuite(
@@ -731,39 +751,54 @@ A2 = TestSuite(
 )
 
 
-with A2.func(1, "double mean(int* x, int size)") as f:
-    f.test()
+with A2.func(1, "double mean(int* x, int size)", "-lm") as f:
+    f.set_format("ai:x[]={$a};~lf:r=$n(x,$ac)", cond="abs(r-$e)<$t")
+    f.test(args=[1,2,3,4,5], expect=3.0, thres=1e-6)
 
 with A2.func(1, "double median(int* x, int size)") as f:
+    f.set_format("ai:x[]={$a};~lf:r=$n(x,$ac)", cond="abs(r-$e)<$t")
     f.test()
 
 with A2.func(1, "int mode(int* x, int size)") as f:
+    f.set_format("ai:x[]={$a};~i:r=$n(x,$ac)", cond="r==$e")
     f.test()
 
 with A2.func(2, "int juggler(int n)") as f:
+    f.set_format("~i:r=$n($a)", cond="r==$e")
     f.test(args=(20,), expect=3)
     f.test(args=(10000,), expect=9)
-    f.test(args=(10001, ), expect_ret="SIGSEGV")
+    f.test(args=(10001, ), expected_code=signal.SIGSEGV)
 
 with A2.func(3, "int bubblesort(int* x, int size)") as f:
-    f.test(args=([548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],), expect=47)
-    f.test(args=([100],), expect=0)
+    f.set_format("ai:x[]={$a},ai:e[]={$e2},~i:r=$n(x,$ac);~ai:x",
+                 cond="r==$e1&&!(memcmp(x,e,$ac*sizeof(int)))", incl="memory.h")
+    f.test(args=[548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],
+           expect=(47, [73, 128, 258, 289, 385, 522, 548, 731, 808, 809, 845, 891, 906, 988]))
+    f.test(args=[100], expect=(0,[100]))
 
 with A2.func(4, "int insertionsort(int* x, int size)") as f:
-    f.test(args=([548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],), expect=47)
-    f.test(args=([100],), expect=0)
+    f.set_format("ai:x[]={$a},ai:e[]={$e2},~i:r=$n(x,$ac);~ai:x",
+                 cond="r==$e1&&!(memcmp(x,e,$ac*sizeof(int)))", incl="memory.h")
+    f.test(args=[548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],
+           expect=(47, [73, 128, 258, 289, 385, 522, 548, 731, 808, 809, 845, 891, 906, 988]))
+    f.test(args=[100], expect=(0,[100]))
+
 
 with A2.func(5, "int binsearch(int* x, int y, int size)") as f:
+    f.set_format("ai:x[]={$a1};i:y=$a2;~i:r=$n(x,y,$a1c)", cond="r==$e")
+
     f.test(args=([22, 25, 37, 42, 56, 56, 60, 69, 73, 75, 94, 109, 129, 132, 134, 148, 160, 168, 168, 169, 172,
 177, 235, 238, 240, 263, 272, 274, 291, 303, 305, 309, 310, 311, 312, 317, 327, 332, 336, 341, 347,
 358, 359, 373, 387, 389, 392, 404, 425, 428, 431, 438, 444, 481, 490, 491, 496, 503, 506, 511, 521,
 554, 554, 555, 559, 565, 572, 580, 587, 587, 617, 642, 643, 660, 681, 684, 697, 712, 726, 726, 739,
 757, 761, 775, 790, 826, 828, 832, 853, 865, 886, 886, 888, 901, 918, 937, 945, 952, 971, 974], 506), expect=5)
+
     f.test(args=([22, 25, 37, 42, 56, 56, 60, 69, 73, 75, 94, 109, 129, 132, 134, 148, 160, 168, 168, 169, 172,
 177, 235, 238, 240, 263, 272, 274, 291, 303, 305, 309, 310, 311, 312, 317, 327, 332, 336, 341, 347,
 358, 359, 373, 387, 389, 392, 404, 425, 428, 431, 438, 444, 481, 490, 491, 496, 503, 506, 511, 521,
 554, 554, 555, 559, 565, 572, 580, 587, 587, 617, 642, 643, 660, 681, 684, 697, 712, 726, 726, 739,
 757, 761, 775, 790, 826, 828, 832, 853, 865, 886, 886, 888, 901, 918, 937, 945, 952, 971, 974],300), expect=-1)
+
     f.test(args=([100], 100), expect=1)
 
 
