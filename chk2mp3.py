@@ -45,8 +45,25 @@ else:
     SHAREDLIB_EXT = ".so"
 
 
+class TextInterface:
+
+    def logError(self, s):
+        print(str(s), file=sys.stderr)
+
+    def logInfo(self, s):
+        print(str(s))
+
+    def logPass(self, s):
+        self.logInfo(s)
+
+    def logAccent(self, s):
+        self.logInfo(s)
+
+    def logWarn(self, s):
+        self.logInfo(s)
+
 # Replaced with an actual interface later on
-interface: Optional["PlainInterface"] = None
+interface = TextInterface()
 CONSOLE_WIDTH = 80
 
 def logE(s):
@@ -65,25 +82,7 @@ def logW(s):
     interface.logWarn(s)
 
 
-class PlainInterface:
-
-    def logError(self, s):
-        print(str(s), file=sys.stderr)
-
-    def logInfo(self, s):
-        print(str(s))
-
-    def logPass(self, s):
-        self.logInfo(s)
-
-    def logAccent(self, s):
-        self.logInfo(s)
-
-    def logWarn(self, s):
-        self.logInfo(s)
-
-
-class ColoredInterface:
+class ColoredInterface(TextInterface):
 
     def _print(self, s, c):
         if not s: print()
@@ -158,6 +157,12 @@ def center_text(s: str, w: int):
 def indent_text(s:str, i):
     return "\n".join(" "*i + x for x in s.splitlines())
 
+def replace(s, to_replace):
+    for k, v in reversed(to_replace.items()):
+        s = s.replace("$" + k, str(v))
+    return s
+
+
 class CSignature(NamedTuple):
     ret_type: str
     name: str
@@ -194,6 +199,18 @@ class CTestTransform(TestTransform):
     def __init__(self, fmt, kwargs):
         super().__init__(fmt, kwargs)
 
+    def update_rep(self, rep: Dict, a, s):
+        try:
+            it = list(a)
+        except TypeError:
+            rep[s] = str(a)
+        else:
+            rep[s] = ",".join(str(x) for x in it)
+            rep[s+"c"] = str(len(it))
+            if len(it) <= 10:
+                for i, v in enumerate(it):
+                    self.update_rep(rep, v, s + str(i + 1))
+
     def format(self, sig, opt: Dict):
         fmt = self.fmt
         kwargs = self.kwargs
@@ -204,11 +221,36 @@ class CTestTransform(TestTransform):
         parsed_sig = parse_c_signature(sig)
         f_name = parsed_sig.name
 
+        rep = {
+            "t": f_thres,
+            "n": f_name
+        }
+        self.update_rep(rep, f_args, "a")
+        self.update_rep(rep, f_exp, "e")
+
         if not cond: return None
 
-        cond_fmd = cond
+        cond_fmd = replace(cond, rep)
         lines = []
-        jlines = '\n'.join("    " + line for line in lines)
+
+        code = fmt.split(";")
+        for stmt in code:
+            fS = stmt.split(":")
+            if len(fS) == 2:
+                flags, actual_stmt = fS
+            else:
+                flags, actual_stmt = "", fS
+
+            pre = ""
+            if "i" in flags:
+                pre = "int "
+            elif "lf" in flags:
+                pre = "double "
+
+            line = pre + replace(actual_stmt, rep)
+            lines.append(line)
+
+        jlines = ';\n'.join("    " + line for line in lines)
         return f"""
 #include <stdio.h>
 #include <memory.h>
@@ -218,7 +260,7 @@ class CTestTransform(TestTransform):
 {sig};
 
 int main() {{
-{jlines}
+{jlines};
     return !({cond_fmd});
 }}"""
 
@@ -318,7 +360,7 @@ class GCCRunner(FunctionRunner):
             logW(indent_text(err_out.strip(), 2))
 
         flags_join = " ".join(flags)
-        logP(f"  [GCC] Compiled in {timeMS:.1f}ms with flags '{flags_join}'")
+        logP(f"  [GCC] Compiled source in {timeMS:.1f}ms with flags '{flags_join}'")
         return True
 
     def compile_shared(self):
@@ -340,14 +382,36 @@ class GCCRunner(FunctionRunner):
         return True
 
     def generate_code(self):
-        name = self.source_path.stem
+        stem = self.source_path.stem
 
         for i, step in enumerate(self.steps):
             t, opt = step
             msg = t.format(self.func_signature, opt)
-            gfile = (self.tmp_path / f"{name}_{self.name}").with_suffix(".c")
+            gfile = (self.tmp_path / f"{stem}_{self.name}_{i}").with_suffix(".c")
+
+            sofile = (self.tmp_path / stem).with_suffix(SHAREDLIB_EXT)
             with open(gfile, "w") as g:
                 g.write(msg)
+
+            xfile = gfile.with_suffix("")
+
+            command = ["gcc", "-o", str(xfile), str(gfile), sofile]
+
+            t1 = time.perf_counter_ns()
+            compile_proc = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL)
+            t2 = time.perf_counter_ns()
+            timeMS = (t2 - t1) / 1e6
+
+            err_out = compile_proc.stderr.decode()
+
+            if compile_proc.returncode != 0:
+                logE(indent_text(err_out, 2))
+                return False
+
+            if err_out:
+                logW(indent_text(err_out.strip(), 2))
+
+            logI(f"  [GCC] Compiled {gfile.name} in {timeMS:.1f}ms")
 
 
     def exec_simple(self):
@@ -546,7 +610,7 @@ class ThreadSafeItemStore:
         self.items = []
 
 
-class TkInterface:
+class TkInterface(TextInterface):
     def __init__(self, executor: ChecklistExecutor):
         global CONSOLE_WIDTH
         CONSOLE_WIDTH = 88
@@ -732,7 +796,7 @@ def run_checker():
         try:
             interface = TkInterface(executor)
         except TclError:
-            interface = PlainInterface()
+            pass
         else:
             interface.run_blocking()
 
@@ -740,7 +804,6 @@ def run_checker():
         interface = ColoredInterface()
         executor.run_configured()
     else:
-        interface = PlainInterface()
         executor.run_configured()
 
 
@@ -814,18 +877,18 @@ with A2.func(2, "int juggler(int n)") as f:
     f.set_format("~i:r=$n($a)", cond="r==$e")
     f.test(args=(20,), expect=3)
     f.test(args=(10000,), expect=9)
-    f.test(args=(10001, ), expected_code=signal.SIGSEGV)
+    f.test(args=(10001, ), expect=0, expected_code=signal.SIGSEGV)
 
 with A2.func(3, "int bubblesort(int* x, int size)") as f:
-    f.set_format("ai:x[]={$a},ai:e[]={$e2},~i:r=$n(x,$ac);~ai:x",
-                 cond="r==$e1&&!(memcmp(x,e,$ac*sizeof(int)))")
+    f.set_format("ai:x[]={$a};ai:e[]={$e2};~i:r=$n(x,$ac)",
+                 cond="r==$e1&&!(memcmp((char*)x,(char*)e,$ac*sizeof(int)))")
     f.test(args=[548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],
            expect=(47, [73, 128, 258, 289, 385, 522, 548, 731, 808, 809, 845, 891, 906, 988]))
     f.test(args=[100], expect=(0,[100]))
 
 with A2.func(4, "int insertionsort(int* x, int size)") as f:
-    f.set_format("ai:x[]={$a},ai:e[]={$e2},~i:r=$n(x,$ac);~ai:x",
-                 cond="r==$e1&&!(memcmp(x,e,$ac*sizeof(int)))")
+    f.set_format("ai:x[]={$a};ai:e[]={$e2};~i:r=$n(x,$ac)",
+                 cond="r==$e1&&!(memcmp((char*)x,(char*)e,$ac*sizeof(int)))")
     f.test(args=[548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],
            expect=(47, [73, 128, 258, 289, 385, 522, 548, 731, 808, 809, 845, 891, 906, 988]))
     f.test(args=[100], expect=(0,[100]))
@@ -844,7 +907,7 @@ with A2.func(5, "int binsearch(int* x, int y, int size)") as f:
 177, 235, 238, 240, 263, 272, 274, 291, 303, 305, 309, 310, 311, 312, 317, 327, 332, 336, 341, 347,
 358, 359, 373, 387, 389, 392, 404, 425, 428, 431, 438, 444, 481, 490, 491, 496, 503, 506, 511, 521,
 554, 554, 555, 559, 565, 572, 580, 587, 587, 617, 642, 643, 660, 681, 684, 697, 712, 726, 726, 739,
-757, 761, 775, 790, 826, 828, 832, 853, 865, 886, 886, 888, 901, 918, 937, 945, 952, 971, 974],300), expect=-1)
+757, 761, 775, 790, 826, 828, 832, 853, 865, 886, 886, 888, 901, 918, 937, 945, 952, 971, 974], 300), expect=-1)
 
     f.test(args=([100], 100), expect=1)
 
