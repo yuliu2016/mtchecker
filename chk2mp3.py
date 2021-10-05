@@ -492,30 +492,23 @@ class TkInterface:
         win = self.window
         win.resizable(False, False)
 
-        frm = Frame(win)
+        top_frame = Frame(win)
 
         options = executor.query_suites()
-        svar = tkinter.StringVar(frm)
-        svar.set("Assignment 1")
-        self.selector = OptionMenu(frm, svar, *options)
+        svar = tkinter.StringVar(top_frame)
+        svar.set(options[-1])
+        self.selector = OptionMenu(top_frame, svar, *options)
         self.selector.pack(side=LEFT)
 
-        options2 =["All Functions"] + executor.query_funcs(0)
-        svar2 = tkinter.StringVar(frm)
+        options2 =["All Functions"] + executor.query_funcs(-1)
+        svar2 = tkinter.StringVar(top_frame)
         svar2.set("All Functions")
-        self.selector2 = OptionMenu(frm, svar2, *options2)
+        self.selector2 = OptionMenu(top_frame, svar2, *options2)
         self.selector2.pack(side=LEFT)
 
-        btn2 = Button(frm, text="Open Folder", command=self.open_folder)
-        btn2.pack(side=LEFT)
+        self.init_buttons(top_frame)
 
-        btn = Button(frm, text="Run Code Checker", command=self.check_code)
-        btn.pack(side=LEFT)
-
-        btn3 = Button(frm, text="Clear Window", command=self.clear_log)
-        btn3.pack(side=LEFT)
-
-        frm.pack()
+        top_frame.pack()
         self.dir = executor.config.path
         self.foldervar = StringVar()
         self.update_dir_label()
@@ -531,6 +524,15 @@ class TkInterface:
         self.log_queue = ThreadSafeItemStore()
         self.thread: Optional[threading.Thread] = None
 
+    def init_buttons(self, frame):
+        btn2 = Button(frame, text="Open Folder", command=self.open_folder)
+        btn2.pack(side=LEFT)
+
+        btn = Button(frame, text="Run Code Checker", command=self.check_code)
+        btn.pack(side=LEFT)
+
+        btn3 = Button(frame, text="Clear Window", command=self.clear_log)
+        btn3.pack(side=LEFT)
 
     def init_log(self):
         self.log.pack()
@@ -676,11 +678,9 @@ def run_checker():
 
 
 
-DEFAULT_PATH_FORMAT = os.path.join("A1", "Q{0}","question{0}.c")
-
 A1 = TestSuite(
     name="Assignment 1",
-    path_format=DEFAULT_PATH_FORMAT
+    path_format=os.path.join("A1", "Q{0}","question{0}.c")
 )
 
 with A1.func(1, "int minutes (int m, int h, int d)") as f:
@@ -724,6 +724,47 @@ with A1.func(6, "int FactorialDoWhile (int n)") as f:
 with A1.func(7, "void mileage (void)") as f:
     f.note("Not currently tested")
 
+
+A2 = TestSuite(
+    name="Assignment 2",
+    path_format=os.path.join("A2", "Q{0}","question{0}.c")
+)
+
+
+with A2.func(1, "double mean(int* x, int size)") as f:
+    f.test()
+
+with A2.func(1, "double median(int* x, int size)") as f:
+    f.test()
+
+with A2.func(1, "int mode(int* x, int size)") as f:
+    f.test()
+
+with A2.func(2, "int juggler(int n)") as f:
+    f.test(args=(20,), expect=3)
+    f.test(args=(10000,), expect=9)
+    f.test(args=(10001, ), expect_ret="SIGSEGV")
+
+with A2.func(3, "int bubblesort(int* x, int size)") as f:
+    f.test(args=([548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],), expect=47)
+    f.test(args=([100],), expect=0)
+
+with A2.func(4, "int insertionsort(int* x, int size)") as f:
+    f.test(args=([548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],), expect=47)
+    f.test(args=([100],), expect=0)
+
+with A2.func(5, "int binsearch(int* x, int y, int size)") as f:
+    f.test(args=([22, 25, 37, 42, 56, 56, 60, 69, 73, 75, 94, 109, 129, 132, 134, 148, 160, 168, 168, 169, 172,
+177, 235, 238, 240, 263, 272, 274, 291, 303, 305, 309, 310, 311, 312, 317, 327, 332, 336, 341, 347,
+358, 359, 373, 387, 389, 392, 404, 425, 428, 431, 438, 444, 481, 490, 491, 496, 503, 506, 511, 521,
+554, 554, 555, 559, 565, 572, 580, 587, 587, 617, 642, 643, 660, 681, 684, 697, 712, 726, 726, 739,
+757, 761, 775, 790, 826, 828, 832, 853, 865, 886, 886, 888, 901, 918, 937, 945, 952, 971, 974], 506), expect=5)
+    f.test(args=([22, 25, 37, 42, 56, 56, 60, 69, 73, 75, 94, 109, 129, 132, 134, 148, 160, 168, 168, 169, 172,
+177, 235, 238, 240, 263, 272, 274, 291, 303, 305, 309, 310, 311, 312, 317, 327, 332, 336, 341, 347,
+358, 359, 373, 387, 389, 392, 404, 425, 428, 431, 438, 444, 481, 490, 491, 496, 503, 506, 511, 521,
+554, 554, 555, 559, 565, 572, 580, 587, 587, 617, 642, 643, 660, 681, 684, 697, 712, 726, 726, 739,
+757, 761, 775, 790, 826, 828, 832, 853, 865, 886, 886, 888, 901, 918, 937, 945, 952, 971, 974],300), expect=-1)
+    f.test(args=([100], 100), expect=1)
 
 
 if __name__ == "__main__":
