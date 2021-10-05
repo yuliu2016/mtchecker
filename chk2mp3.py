@@ -183,10 +183,44 @@ class TestResult(NamedTuple):
     pass
 
 class TestTransform:
-    pass
+    def __init__(self, fmt, kwargs: Dict[str, str]):
+        self.fmt = fmt
+        self.kwargs = kwargs
 
-class CTestTransform:
-    pass
+    def format(self, sig, opt: Dict):
+        return f"Not implemented by {self.__class__}"
+
+class CTestTransform(TestTransform):
+    def __init__(self, fmt, kwargs):
+        super().__init__(fmt, kwargs)
+
+    def format(self, sig, opt: Dict):
+        fmt = self.fmt
+        kwargs = self.kwargs
+        cond = kwargs.get("cond")
+        f_args = opt.get("args")
+        f_exp = opt.get("expect")
+        f_thres = opt.get("threshold")
+        parsed_sig = parse_c_signature(sig)
+        f_name = parsed_sig.name
+
+        if not cond: return None
+
+        cond_fmd = cond
+        lines = []
+        jlines = '\n'.join("    " + line for line in lines)
+        return f"""
+#include <stdio.h>
+#include <memory.h>
+#include <math.h>
+#include <stdlib.h>
+
+{sig};
+
+int main() {{
+{jlines}
+    return !({cond_fmd});
+}}"""
 
 
 class FunctionRunner:
@@ -196,7 +230,7 @@ class FunctionRunner:
         self.args = args
         self.kwargs = kwargs
         self.name = ""
-        self.steps = []
+        self.steps: List[Tuple[TestTransform, Dict]] = []
         self.tmp_path: Optional[pathlib.Path] = None
         self.abs_path = None
         self.next_transform: Optional[TestTransform] = None
@@ -211,7 +245,7 @@ class FunctionRunner:
             self.steps.append((t, step_args))
 
 
-    def set_test_transform(self, transform, fmt, kwargs):
+    def set_test_transform(self, transform: Type[TestTransform], fmt, kwargs):
         self.next_transform = transform(fmt, kwargs)
 
     def configure_path(self, root, tmp):
@@ -305,12 +339,23 @@ class GCCRunner(FunctionRunner):
         logI("  [GCC] Recompiled function into a shared library")
         return True
 
+    def generate_code(self):
+        name = self.source_path.stem
+
+        for i, step in enumerate(self.steps):
+            t, opt = step
+            msg = t.format(self.func_signature, opt)
+            gfile = (self.tmp_path / f"{name}_{self.name}").with_suffix(".c")
+            with open(gfile, "w") as g:
+                g.write(msg)
+
 
     def exec_simple(self):
         if not self.compile_object():
             return
         if not self.compile_shared():
             return
+        self.generate_code()
 
 
 class TestFunction:
@@ -444,7 +489,9 @@ class ChecklistExecutor:
     def cleanup(self):
         if not self.config.debug:
             shutil.rmtree(self._tmp_dir)
-        logP("Cleaned up temporary directory")
+            logP("Cleaned up temporary directory")
+        else:
+            logP("Temp directory left for debugging")
 
     def run_tests(self, path: str, suite_no: Optional[int], tests: Optional[List[int]]):
         if not self.check_suite_and_tests(suite_no, tests): return
@@ -753,7 +800,7 @@ A2 = TestSuite(
 
 with A2.func(1, "double mean(int* x, int size)", "-lm") as f:
     f.set_format("ai:x[]={$a};~lf:r=$n(x,$ac)", cond="abs(r-$e)<$t")
-    f.test(args=[1,2,3,4,5], expect=3.0, thres=1e-6)
+    f.test(args=[1,2,3,4,5], expect=3.0, threshold=1e-6)
 
 with A2.func(1, "double median(int* x, int size)") as f:
     f.set_format("ai:x[]={$a};~lf:r=$n(x,$ac)", cond="abs(r-$e)<$t")
@@ -771,14 +818,14 @@ with A2.func(2, "int juggler(int n)") as f:
 
 with A2.func(3, "int bubblesort(int* x, int size)") as f:
     f.set_format("ai:x[]={$a},ai:e[]={$e2},~i:r=$n(x,$ac);~ai:x",
-                 cond="r==$e1&&!(memcmp(x,e,$ac*sizeof(int)))", incl="memory.h")
+                 cond="r==$e1&&!(memcmp(x,e,$ac*sizeof(int)))")
     f.test(args=[548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],
            expect=(47, [73, 128, 258, 289, 385, 522, 548, 731, 808, 809, 845, 891, 906, 988]))
     f.test(args=[100], expect=(0,[100]))
 
 with A2.func(4, "int insertionsort(int* x, int size)") as f:
     f.set_format("ai:x[]={$a},ai:e[]={$e2},~i:r=$n(x,$ac);~ai:x",
-                 cond="r==$e1&&!(memcmp(x,e,$ac*sizeof(int)))", incl="memory.h")
+                 cond="r==$e1&&!(memcmp(x,e,$ac*sizeof(int)))")
     f.test(args=[548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],
            expect=(47, [73, 128, 258, 289, 385, 522, 548, 731, 808, 809, 845, 891, 906, 988]))
     f.test(args=[100], expect=(0,[100]))
