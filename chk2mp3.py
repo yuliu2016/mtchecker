@@ -111,12 +111,12 @@ def check_gcc_version():
         return False
     logI(f"Found gcc at {gcc_path}")
 
-    gccv = subprocess.run(["gcc", "--version"], 
+    gccv = subprocess.run(["gcc", "--version"],
         capture_output=True, stdin=subprocess.DEVNULL)
 
     if gccv.returncode != 0:
         logE("GCC might be broken")
-    
+
     v_line = gccv.stdout.decode().split("\n")[0].strip()
     logI(f"<{v_line}>")
 
@@ -138,12 +138,12 @@ def check_git_version():
         return False
     logI(f"Found git at {git_path}")
 
-    gitv = subprocess.run(["git", "--version"], 
+    gitv = subprocess.run(["git", "--version"],
         capture_output=True, stdin=subprocess.DEVNULL)
 
     if gitv.returncode != 0:
         logE("git might be broken")
-    
+
     v_line = gitv.stdout.decode().split("\n")[0].strip()
     logI(f"<{v_line}>")
     return True
@@ -169,141 +169,24 @@ class CSignature(NamedTuple):
     arg_types: List[str]
 
 
-def parse_c_signature(sig: str):
-    # todo add a proper parser here
-    L, R = sig.split("(")
-    L = L.strip().split(" ")
-    R = R.strip().strip(")")
-    name = L[-1]
-    ret = " ".join(L[:-1])
-    A = R.split(",")
-    args = []
-    for arg_def in A:
-        sp = arg_def.split(" ")
-        args.append(" ".join(sp[:-1]))
-    return CSignature(ret, name, args)
 
-
-class TestResult(NamedTuple):
-    pass
-
-class TestTransform:
-    def __init__(self, fmt, kwargs: Dict[str, str]):
-        self.fmt = fmt
-        self.kwargs = kwargs
-
-    def format(self, sig, opt: Dict):
-        return f"Not implemented by {self.__class__}"
-
-class CTestTransform(TestTransform):
-    def __init__(self, fmt, kwargs):
-        super().__init__(fmt, kwargs)
-
-    def update_rep(self, rep: Dict, a, s):
-        try:
-            it = list(a)
-        except TypeError:
-            rep[s] = str(a)
-        else:
-            rep[s] = ",".join(str(x) for x in it)
-            rep[s+"c"] = str(len(it))
-            if len(it) <= 10:
-                for i, v in enumerate(it):
-                    self.update_rep(rep, v, s + str(i + 1))
-
-    def format(self, sig, opt: Dict):
-        fmt = self.fmt
-        kwargs = self.kwargs
-        cond = kwargs.get("cond")
-        f_args = opt.get("args")
-        f_exp = opt.get("expect")
-        f_thres = opt.get("threshold")
-        parsed_sig = parse_c_signature(sig)
-        f_name = parsed_sig.name
-
-        rep = {
-            "t": f_thres,
-            "n": f_name
-        }
-        self.update_rep(rep, f_args, "a")
-        self.update_rep(rep, f_exp, "e")
-
-        if not cond: return None
-
-        cond_fmd = replace(cond, rep)
-        lines = []
-
-        code = fmt.split(";")
-        for stmt in code:
-            fS = stmt.split(":")
-            if len(fS) == 2:
-                flags, actual_stmt = fS
-            else:
-                flags, actual_stmt = "", fS
-
-            pre = ""
-            if "i" in flags:
-                pre = "int "
-            elif "lf" in flags:
-                pre = "double "
-
-            line = pre + replace(actual_stmt, rep)
-            lines.append(line)
-
-        jlines = ';\n'.join("    " + line for line in lines)
-        return f"""
-#include <stdio.h>
-#include <memory.h>
-#include <math.h>
-#include <stdlib.h>
-
-{sig};
-
-int main() {{
-{jlines};
-    return !({cond_fmd});
-}}"""
-
-
-class FunctionRunner:
-    def __init__(self, file_subpath, func_signature, args, kwargs):
-        self.file_subpath = file_subpath
-        self.func_signature = func_signature
-        self.args = args
-        self.kwargs = kwargs
-        self.name = ""
-        self.steps: List[Tuple[TestTransform, Dict]] = []
-        self.tmp_path: Optional[pathlib.Path] = None
-        self.abs_path = None
-        self.next_transform: Optional[TestTransform] = None
-
-    def add_test_step(self, step_args):
-        # Filter out empty/stub tests
-        if step_args:
-            if self.next_transform:
-                t = self.next_transform
-            else:
-                t = None
-            self.steps.append((t, step_args))
-
-
-    def set_test_transform(self, transform: Type[TestTransform], fmt, kwargs):
-        self.next_transform = transform(fmt, kwargs)
-
-    def configure_path(self, root, tmp):
-        self.abs_path = os.path.join(root, self.file_subpath)
+class TestRunner:
+    def __init__(self, root, tpath, tmp, suite, test, steps):
+        self.root = root
+        self.test_path = tpath
         self.tmp_path = pathlib.Path(tmp)
-        return True
+        self.suite = suite
+        self.test = test
+        self.steps = steps
+        self.abs_path = None
 
     def exec_simple(self):
         pass
 
 
-class GCCRunner(FunctionRunner):
-    def __init__(self, file_subpath, func_signature, args, kwargs):
-        super().__init__(file_subpath, func_signature, args, kwargs)
-        self.signature = parse_c_signature(func_signature)
-        self.name = self.signature.name
+class GCCRunner(TestRunner):
+    def __init__(self, root, tpath, tmp, suite, test, steps):
+        super().__init__(root, tpath, tmp, suite, test, steps)
         self.source_path: Optional[pathlib.Path] = None
 
     def object_file_name(self, fpath: str):
@@ -422,49 +305,10 @@ class GCCRunner(FunctionRunner):
         self.generate_code()
 
 
-class TestFunction:
-    def __init__(self, runner) -> None:
-        self.__runner = runner
-
-
-    def __enter__(self) :
-        return self
-
-    def __exit__(self, *exc_info):
-        pass
-
-    def set_format(self, fmt, transform: Type[TestTransform]=CTestTransform, **kwargs):
-        self.__runner.set_test_transform(transform, fmt, kwargs)
-
-    def test(self, **kwargs):
-        self.__runner.add_test_step(kwargs)
-
-
-class TestSuite:
-    def __init__(self, name: str, path_format: str):
-        self.name = name
-        self.path_format = path_format
-        self.funcs: List[FunctionRunner] = []
-
-    def func(self,
-        file_arg: Union[int, str], 
-        func_signature: str,
-        args: str = "",
-        runner: Type[FunctionRunner]=GCCRunner,
-        **kwargs):
-
-        file_path = self.path_format.format(file_arg)
-
-        runner_inst = runner(file_path, func_signature, args, kwargs)
-        func = TestFunction(runner_inst)
-        self.funcs.append(runner_inst)
-        return func
-
-
 class ProbingExecutor:
 
     # noinspection PyTypeChecker
-    def __init__(self, config: "InitConfig", runners: Dict[Any,Type[FunctionRunner]]):
+    def __init__(self, config: "InitConfig", runners: Dict[Any,Type[TestRunner]]):
         self.config = config
         self.runners = runners
 
@@ -478,8 +322,8 @@ class ProbingExecutor:
 
         self._path: str = ""
         self._tpath: str = ""
-        self._suite: str = ""
-        self._tests: List[str] = []
+        self._suite_name: str = ""
+        self._test_names: List[str] = []
         self._total_steps = 0
 
         self._tmp_dir: str = ""
@@ -535,17 +379,19 @@ class ProbingExecutor:
 
     def _checked_run(self):
         self.print_title()
+        for test in self._test_names:
+            runner = self._resolve_runner(test)
+            runner.exec_simple()
 
-        for test_no in self._tests:
-            runner = self._suite.funcs[test_no]
-            if runner.configure_path(self._path, self._tmp_dir):
-                runner.exec_simple()
-                logI("")
+    def _resolve_runner(self, test) -> TestRunner:
+        factory =  self.runners["default"]
+        steps = self.suites[self._suite_name][test]
+        return factory(self._path, self._tpath, self._tmp_dir, self._suite_name, test, steps)
 
     def print_title(self):
         logI("=" * CONSOLE_WIDTH)
-        title = f"{self._suite} (Total: " \
-                f"{len(self._tests)} Functions, {self._total_steps} Test Steps)"
+        title = f"{self._suite_name} (Total: " \
+                f"{len(self._test_names)} Functions, {self._total_steps} Test Steps)"
         logI(center_text(title, CONSOLE_WIDTH))
         logI("=" * CONSOLE_WIDTH)
 
@@ -560,8 +406,8 @@ class ProbingExecutor:
     def init_run_tests(self, path: str, test_path:str, suite: str, tests: List[str]):
         self._path = path
         self._tpath = test_path
-        self._suite = suite
-        self._tests = tests
+        self._suite_name = suite
+        self._test_names = tests
 
         suiteval = self.suites[suite]
         for test in tests:
@@ -727,10 +573,10 @@ class TkInterface(TextInterface):
         def command():
             var.set(item)
         return command
-    
+
     def update_suites(self, suites):
         self.update_menu(self.suite_menu["menu"], self.suite_var, suites)
-        
+
     def update_tests(self, tests):
         self.update_menu(self.test_menu["menu"], self.test_var, tests)
 
@@ -823,7 +669,7 @@ class InitConfig(NamedTuple):
 def init_config():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("-p", 
+    parser.add_argument("-p",
         help="specify the root project directory, pwd if unset", metavar="PATH")
 
     parser.add_argument("-t", help="specify where to find the tests", metavar="PATH")
