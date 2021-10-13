@@ -187,7 +187,10 @@ class TestRunner:
 class GCCRunner(TestRunner):
     def __init__(self, root, tpath, tmp, suite, test, steps):
         super().__init__(root, tpath, tmp, suite, test, steps)
-        self.source_path: Optional[pathlib.Path] = None
+        self.source_path_root = pathlib.Path(root) / suite / test
+        self.test_path_root = pathlib.Path(tpath) / suite / test
+        self.compiled_files = []
+
 
     def object_file_name(self, fpath: str):
         path = pathlib.Path(fpath)
@@ -200,33 +203,13 @@ class GCCRunner(TestRunner):
         else:
             return path.with_suffix(".o")
 
-    def configure_path(self, root, tmp):
-        super().configure_path(root, tmp)
 
-        source_path = pathlib.Path(self.abs_path)
-        if source_path.suffix != ".c":
-            logE("Not Compiling a C file; Incompatible runner")
-            return False
-        if not source_path.exists():
-            logE("File to be compiled does not exist")
-            return False
-
-        logA(f"Checking '{self.func_signature}' in '{source_path.name}'")
-        self.source_path = source_path
-        return True
-
-
-    def compile_object(self):
-        source_path = self.source_path
+    def compile_object(self, source_path, flags=("-Wall", "-lm"), post_flags=tuple(), disp_name="source"):
 
         stem = source_path.stem
         objfile = self.tmp_path / stem
 
-        flags = ["-Wall"]
-        if self.args:
-            flags.append(self.args)
-
-        command = ["gcc", *flags, "-o", str(objfile), str(source_path)]
+        command = ["gcc", *flags, "-o", str(objfile), str(source_path), *post_flags]
 
         t1 = time.perf_counter_ns()
         compile_proc = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL)
@@ -243,12 +226,10 @@ class GCCRunner(TestRunner):
             logW(indent_text(err_out.strip(), 2))
 
         flags_join = " ".join(flags)
-        logP(f"  [GCC] Compiled source in {timeMS:.1f}ms with flags '{flags_join}'")
+        logP(f"  [GCC] Compiled {disp_name} in {timeMS:.1f}ms with flags '{flags_join}'")
         return True
 
-    def compile_shared(self):
-        source_path = self.source_path
-
+    def compile_shared(self, source_path):
         stem = source_path.stem
         sofile = (self.tmp_path / stem).with_suffix(SHAREDLIB_EXT)
 
@@ -264,46 +245,46 @@ class GCCRunner(TestRunner):
         logI("  [GCC] Recompiled function into a shared library")
         return True
 
-    def generate_code(self):
-        stem = self.source_path.stem
+    def resolve_step_file(self, step: str):
+        try:
+            a, b = step.split("_")
+            c, e = b.split(".")
+            if e != "c" or not c.startswith("test"): raise ValueError
 
-        for i, step in enumerate(self.steps):
-            t, opt = step
-            msg = t.format(self.func_signature, opt)
-            gfile = (self.tmp_path / f"{stem}_{self.name}_{i}").with_suffix(".c")
+            return a + ".c", int(c[4:])
+        except ValueError:
+            return None, None
 
-            sofile = (self.tmp_path / stem).with_suffix(SHAREDLIB_EXT)
-            with open(gfile, "w") as g:
-                g.write(msg)
+    def exec_step(self, step: str):
+        fname, step_no = self.resolve_step_file(step)
+        if not fname:
+            logE(f"Cannot resolve file for {step}")
+            return
 
-            xfile = gfile.with_suffix("")
+        source_path = self.source_path_root / fname
+        if not source_path.exists():
+            logE("File to be compiled does not exist")
+            return
 
-            command = ["gcc", "-o", str(xfile), str(gfile), sofile]
+        logA(f"Checking step {step_no} in '{source_path.name}'")
+        if fname in self.compiled_files:
+            logI("  File has already been compiled")
+        else:
+            if not self.compile_object(source_path):return
+            if not self.compile_shared(source_path):return
+            self.compiled_files.append(fname)
 
-            t1 = time.perf_counter_ns()
-            compile_proc = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL)
-            t2 = time.perf_counter_ns()
-            timeMS = (t2 - t1) / 1e6
+        sofile = (self.tmp_path / fname).with_suffix(SHAREDLIB_EXT)
+        step_path = self.test_path_root / step
 
-            err_out = compile_proc.stderr.decode()
-
-            if compile_proc.returncode != 0:
-                logE(indent_text(err_out, 2))
-                return False
-
-            if err_out:
-                logW(indent_text(err_out.strip(), 2))
-
-            logI(f"  [GCC] Compiled {gfile.name} in {timeMS:.1f}ms")
+        if not self.compile_object(step_path,
+            post_flags=(str(sofile),), disp_name=f"'{step}'"): return
 
 
     def exec_simple(self):
-        if not self.compile_object():
-            return
-        if not self.compile_shared():
-            return
-        self.generate_code()
-
+        for step in self.steps:
+            self.exec_step(step)
+            logI("")
 
 class ProbingExecutor:
 
@@ -382,6 +363,7 @@ class ProbingExecutor:
         for test in self._test_names:
             runner = self._resolve_runner(test)
             runner.exec_simple()
+        logI(f"Finished all {self._total_steps} steps")
 
     def _resolve_runner(self, test) -> TestRunner:
         factory =  self.runners["default"]
@@ -559,11 +541,11 @@ class TkInterface(TextInterface):
         assert args[2] == "w"
         self.update_tests(["All"] + self.executor.query_funcs(self.suite_var.get()))
 
-    def update_menu(self, menu:Menu, var:StringVar, items: List[str]):
+    def update_menu(self, menu:Menu, var:StringVar, items: List[str], i):
         if not items: return
         # https://stackoverflow.com/a/17581364
         menu.delete(0, 'end')
-        var.set(items[0])
+        var.set(items[i])
         for item in items:
             # noinspection PyProtectedMember
             menu.add_command(label=item, command=self._setit(var, item))
@@ -575,10 +557,10 @@ class TkInterface(TextInterface):
         return command
 
     def update_suites(self, suites):
-        self.update_menu(self.suite_menu["menu"], self.suite_var, suites)
+        self.update_menu(self.suite_menu["menu"], self.suite_var, suites, -1)
 
     def update_tests(self, tests):
-        self.update_menu(self.test_menu["menu"], self.test_var, tests)
+        self.update_menu(self.test_menu["menu"], self.test_var, tests, 0)
 
 
     def update_dir_label(self):
