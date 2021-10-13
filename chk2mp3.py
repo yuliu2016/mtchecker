@@ -440,16 +440,11 @@ class TestFunction:
         self.__runner.add_test_step(kwargs)
 
 
-CHECKLIST: "List[TestSuite]" = []
-
 class TestSuite:
-    def __init__(self, name: str, path_format: str, add_to_global_checklist=True):
+    def __init__(self, name: str, path_format: str):
         self.name = name
         self.path_format = path_format
         self.funcs: List[FunctionRunner] = []
-
-        if add_to_global_checklist:
-            CHECKLIST.append(self)
 
     def func(self,
         file_arg: Union[int, str], 
@@ -466,12 +461,13 @@ class TestSuite:
         return func
 
 
-class ChecklistExecutor:
+class ProbingExecutor:
 
     # noinspection PyTypeChecker
-    def __init__(self, config: "InitConfig", checklist: List[TestSuite]):
+    def __init__(self, config: "InitConfig"):
         self.config = config
-        self.checklist = checklist
+        self.ready = False
+        self.suites: Dict[str,Dict[str,List[str]]] = {}
 
         self.prelim_checked = False
         self.prev_path = None
@@ -483,6 +479,29 @@ class ChecklistExecutor:
         self._suite: TestSuite = None
         self._total_steps = 0
         self._tests: List[int] = []
+
+
+    def init_probe(self):
+        self.ready = False
+        path, tpath = self.config.project_path, self.config.tests_path
+        if not os.path.isabs(path):
+            logE("Test path not absolute")
+            return
+
+        suites = {}
+
+        for (dirpath, dirnames, filenames) in os.walk(tpath):
+            rel = os.path.relpath(dirpath, tpath)
+            if os.sep not in rel: continue
+            a, b = rel.split(os.sep)
+            if a not in suites: suites[a] = {}
+            if b not in suites[a]: suites[a][b] = []
+            fs = suites[a][b]
+            for fn in filenames:
+                fs.append(fn)
+
+        self.suites = suites
+        self.ready = True
 
     def create_tmp_dir(self, path: str):
         if not os.path.isabs(path):
@@ -568,21 +587,17 @@ class ChecklistExecutor:
             self.cleanup()
 
     def run_configured(self):
-        self.run_tests(self.config.path, self.config.suite_no, self.config.tests)
+        self.init_probe()
+        self.run_tests(self.config.project_path, self.config.suite_no, self.config.tests)
 
     def query_suites(self):
-        suites = self.checklist
-        names = []
-        for suite in suites:
-            names.append(suite.name)
-        return names
+        assert self.ready
+        return list(self.suites.keys())
 
-    def query_funcs(self, index):
-        suite = self.checklist[index]
-        names = []
-        for func in suite.funcs:
-            names.append(func.name)
-        return names
+    def query_funcs(self, name):
+        assert self.ready
+        suite = self.suites[name]
+        return list(suite.keys())
 
 
 class ThreadSafeItemStore:
@@ -611,41 +626,38 @@ class ThreadSafeItemStore:
 
 
 class TkInterface(TextInterface):
-    def __init__(self, executor: ChecklistExecutor):
+    def __init__(self, executor: ProbingExecutor):
         global CONSOLE_WIDTH
         CONSOLE_WIDTH = 88
 
         self.executor = executor
 
-        self.window = Tk()
-        self.window.title("2MP3 Code Checker")
-
-        win = self.window
+        win = self.window = Tk()
+        win.title("2MP3 Code Checker")
         win.resizable(False, False)
 
-        top_frame = Frame(win)
+        self.top_frame = frame = Frame(win)
 
-        options = executor.query_suites()
-        svar = tkinter.StringVar(top_frame)
-        svar.set(options[-1])
-        self.selector = OptionMenu(top_frame, svar, *options)
-        self.selector.pack(side=LEFT)
+        svar = self.suite_var = tkinter.StringVar(frame)
+        svar.set("Loading")
+        svar.trace("w", self.on_suite_changed)
+        smenu = self.suite_menu = OptionMenu(frame, svar, "Loading")
+        smenu.pack(side=LEFT)
 
-        options2 =["All Functions"] + executor.query_funcs(-1)
-        svar2 = tkinter.StringVar(top_frame)
-        svar2.set("All Functions")
-        self.selector2 = OptionMenu(top_frame, svar2, *options2)
-        self.selector2.pack(side=LEFT)
+        tvar = self.test_var = tkinter.StringVar(frame)
+        tvar.set("All")
+        tmenu = self.test_menu = OptionMenu(frame, tvar, "All", "Blah")
+        tmenu.pack(side=LEFT)
 
-        self.init_buttons(top_frame)
+        self.init_buttons(frame)
 
-        top_frame.pack()
-        self.dir = executor.config.path
-        self.foldervar = StringVar()
+        frame.pack()
+
+        self.dir = executor.config.project_path
+        self.folder_var = StringVar()
         self.update_dir_label()
-        self.folder = Label(win, textvariable=self.foldervar)
+        self.folder = Label(win, textvariable=self.folder_var)
         self.folder.pack()
-
 
         self.log = ScrolledText(self.window, width=88, height=32,
                                 selectbackground="lightgray", state=DISABLED)
@@ -654,6 +666,9 @@ class TkInterface(TextInterface):
         # Threading Objects
         self.log_queue = ThreadSafeItemStore()
         self.thread: Optional[threading.Thread] = None
+
+        self.window.after(100, self.init_probe)
+
 
     def init_buttons(self, frame):
         btn2 = Button(frame, text="Open Folder", command=self.open_folder)
@@ -677,8 +692,34 @@ class TkInterface(TextInterface):
     def run_blocking(self):
         self.window.mainloop()
 
+    def on_suite_changed(self, *args):
+        assert args[2] == "w"
+        self.update_tests(["All"] + self.executor.query_funcs(self.suite_var.get()))
+
+    def update_menu(self, menu:Menu, var:StringVar, items: List[str]):
+        if not items: return
+        # https://stackoverflow.com/a/17581364
+        menu.delete(0, 'end')
+        var.set(items[0])
+        for item in items:
+            # noinspection PyProtectedMember
+            menu.add_command(label=item, command=self._setit(var, item))
+
+    @staticmethod
+    def _setit(var, item):
+        def command():
+            var.set(item)
+        return command
+    
+    def update_suites(self, suites):
+        self.update_menu(self.suite_menu["menu"], self.suite_var, suites)
+        
+    def update_tests(self, tests):
+        self.update_menu(self.test_menu["menu"], self.test_var, tests)
+
+
     def update_dir_label(self):
-        self.foldervar.set(f"Project Folder: {self.dir}")
+        self.folder_var.set(f"Project Folder: {self.dir}")
 
     def open_folder(self):
         self.dir = askdirectory()
@@ -686,17 +727,27 @@ class TkInterface(TextInterface):
             self.update_dir_label()
             logI(f"Opened project folder {self.dir}")
 
+    def init_probe(self):
+        self.executor.init_probe()
+        self.update_suites(self.executor.query_suites())
+        # tests are automatically updated in the reaction
+
     def check_code(self):
         if self.thread is not None:
             logW("There is still a process running! Wait until it finishes")
             return
         self.log_queue.clear()
-        self.thread = threading.Thread(target=self.check_code_new_thread)
+
+        suite = self.suite_var.get()
+        test = self.test_var.get()
+
+        self.thread = threading.Thread(target=self.check_code_new_thread, args=(suite,test))
         self.thread.start()
         self.window.after(100, self.process_log_queue)
 
-    def check_code_new_thread(self):
-        self.executor.run_configured()
+    def check_code_new_thread(self, suite, test):
+        logI(f"Checking suite {suite} and test {test}")
+        # self.executor.run_configured()
         # todo self.executor.run_tests()
         self.thread = None
 
@@ -719,7 +770,12 @@ class TkInterface(TextInterface):
             self.window.after(100, self.process_log_queue)
 
     def __unsafe_log(self, s, c):
-        self.log_queue.add((str(s) + "\n", c))
+        if threading.current_thread() == threading.main_thread():
+            self.log.configure(state=NORMAL)
+            self.log.insert(END, str(s) + "\n", c)
+            self.log.configure(state=DISABLED)
+        else:
+            self.log_queue.add((str(s) + "\n", c))
 
     def logInfo(self, s):
         self.__unsafe_log(s, "t_blue")
@@ -738,7 +794,8 @@ class TkInterface(TextInterface):
 
 
 class InitConfig(NamedTuple):
-    path: str  # Must be the absolute path
+    project_path: str  # Must be the absolute path
+    tests_path: str
     display_mode: str
     suite_no: Optional[int]
     tests: Optional[List[int]]
@@ -751,9 +808,12 @@ def init_config():
     parser.add_argument("-p", 
         help="specify the root project directory, pwd if unset", metavar="PATH")
 
+    parser.add_argument("-t", help="specify where to find the tests", metavar="PATH")
+
     parser.add_argument("-s", metavar="SUITE", type=int,
         help="specify the test suite (i.e. assignment) number. Last suite tested if unset.")
-    parser.add_argument("-t", metavar="TEST", type=int, nargs="+",
+
+    parser.add_argument("-q", metavar="TEST", type=int, nargs="+",
         help="specify the test numbers. All from each suite are tested if unset")
 
     parser.add_argument("-m",
@@ -768,17 +828,25 @@ def init_config():
     args = parser.parse_args()
 
     if args.p:
-        definite_path = os.path.abspath(args.p)
+        project_path = os.path.abspath(args.p)
     else:
-        definite_path = os.getcwd()
+        project_path = os.getcwd()
 
-    return InitConfig(definite_path, args.m, args.s, args.t, args.d)
+    if args.t:
+        if os.path.isabs(s):
+            tests_path = args.t
+        else:
+            tests_path = os.path.join(project_path, args.t)
+    else:
+        tests_path = os.path.join(project_path, "tests")
+
+    return InitConfig(project_path, tests_path, args.m, args.s, args.q, args.d)
 
 
 
 def run_checker():
     config = init_config()
-    executor = ChecklistExecutor(config, CHECKLIST)
+    executor = ProbingExecutor(config)
 
     global interface
 
@@ -805,111 +873,6 @@ def run_checker():
         executor.run_configured()
     else:
         executor.run_configured()
-
-
-
-A1 = TestSuite(
-    name="Assignment 1",
-    path_format=os.path.join("A1", "Q{0}","question{0}.c")
-)
-
-with A1.func(1, "int minutes (int m, int h, int d)") as f:
-    f.test(args=(1,1,1), expect=1501)
-    f.test(args=(30,15,2), expect=3810)
-    f.test(args=(0,0,0), expect=0)
-    
-
-with A1.func(2, "float onethird (int n)", "-lm") as f:
-    f.test(args=(1,), expect=1.000000, threshold=1e-6)
-    f.test(args=(10,), expect=0.385000, threshold=1e-6)
-    f.test(args=(9999,), expect=0.333383, threshold=1e-6)
-    
-with A1.func(3, "int multiples (int x, int y, int N)") as f:
-    f.test(args=(2,3,10), expect=42) # given case
-    f.test(args=(4,10,20), expect=70)
-    f.test(args=(32,14,10), expect=0)
-    f.test(args=(11,15,20), expect=26)
-
-with A1.func(4, "float compoundInterest (float p, int a, int n)", "-lm") as f:
-    f.test(args=(0.05,20,5), expect=25.53, threshold=1e-3)
-    f.test(args=(0.10,910,3), expect=1211.21, threshold=1e-3)
-    f.test(args=(0.06,800,2), expect=898.88, threshold=1e-3)
-
-with A1.func(5, "int LeapYearCheck (int n)") as f:
-    f.test(args=(2000,), expect=1)
-    f.test(args=(2021,), expect=0)
-    f.test(args=(1752,), expect=1)
-    f.test(args=(2100,), expect=0)
-
-with A1.func(6, "int FactorialWhile (int n)") as f:
-    f.test(args=(3,), expect=6)
-    f.test(args=(0,), expect=1)
-    f.test(args=(10,), expect=3628800)
-
-with A1.func(6, "int FactorialDoWhile (int n)") as f:
-    f.test(args=(3,), expect=6)
-    f.test(args=(0,), expect=1)
-    f.test(args=(10,), expect=3628800)
-
-with A1.func(7, "void mileage (void)") as f:
-    f.test()
-
-
-A2 = TestSuite(
-    name="Assignment 2",
-    path_format=os.path.join("A2", "Q{0}","question{0}.c")
-)
-
-
-with A2.func(1, "double mean(int* x, int size)", "-lm") as f:
-    f.set_format("ai:x[]={$a};~lf:r=$n(x,$ac)", cond="abs(r-$e)<$t")
-    f.test(args=[1,2,3,4,5], expect=3.0, threshold=1e-6)
-
-with A2.func(1, "double median(int* x, int size)") as f:
-    f.set_format("ai:x[]={$a};~lf:r=$n(x,$ac)", cond="abs(r-$e)<$t")
-    f.test()
-
-with A2.func(1, "int mode(int* x, int size)") as f:
-    f.set_format("ai:x[]={$a};~i:r=$n(x,$ac)", cond="r==$e")
-    f.test()
-
-with A2.func(2, "int juggler(int n)") as f:
-    f.set_format("~i:r=$n($a)", cond="r==$e")
-    f.test(args=(20,), expect=3)
-    f.test(args=(10000,), expect=9)
-    f.test(args=(10001, ), expect=0, expected_code=signal.SIGSEGV)
-
-with A2.func(3, "int bubblesort(int* x, int size)") as f:
-    f.set_format("ai:x[]={$a};ai:e[]={$e2};~i:r=$n(x,$ac)",
-                 cond="r==$e1&&!(memcmp((char*)x,(char*)e,$ac*sizeof(int)))")
-    f.test(args=[548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],
-           expect=(47, [73, 128, 258, 289, 385, 522, 548, 731, 808, 809, 845, 891, 906, 988]))
-    f.test(args=[100], expect=(0,[100]))
-
-with A2.func(4, "int insertionsort(int* x, int size)") as f:
-    f.set_format("ai:x[]={$a};ai:e[]={$e2};~i:r=$n(x,$ac)",
-                 cond="r==$e1&&!(memcmp((char*)x,(char*)e,$ac*sizeof(int)))")
-    f.test(args=[548, 845, 731, 258, 809, 522, 73, 385, 906, 891, 988, 289, 808, 128],
-           expect=(47, [73, 128, 258, 289, 385, 522, 548, 731, 808, 809, 845, 891, 906, 988]))
-    f.test(args=[100], expect=(0,[100]))
-
-
-with A2.func(5, "int binsearch(int* x, int y, int size)") as f:
-    f.set_format("ai:x[]={$a1};i:y=$a2;~i:r=$n(x,y,$a1c)", cond="r==$e")
-
-    f.test(args=([22, 25, 37, 42, 56, 56, 60, 69, 73, 75, 94, 109, 129, 132, 134, 148, 160, 168, 168, 169, 172,
-177, 235, 238, 240, 263, 272, 274, 291, 303, 305, 309, 310, 311, 312, 317, 327, 332, 336, 341, 347,
-358, 359, 373, 387, 389, 392, 404, 425, 428, 431, 438, 444, 481, 490, 491, 496, 503, 506, 511, 521,
-554, 554, 555, 559, 565, 572, 580, 587, 587, 617, 642, 643, 660, 681, 684, 697, 712, 726, 726, 739,
-757, 761, 775, 790, 826, 828, 832, 853, 865, 886, 886, 888, 901, 918, 937, 945, 952, 971, 974], 506), expect=5)
-
-    f.test(args=([22, 25, 37, 42, 56, 56, 60, 69, 73, 75, 94, 109, 129, 132, 134, 148, 160, 168, 168, 169, 172,
-177, 235, 238, 240, 263, 272, 274, 291, 303, 305, 309, 310, 311, 312, 317, 327, 332, 336, 341, 347,
-358, 359, 373, 387, 389, 392, 404, 425, 428, 431, 438, 444, 481, 490, 491, 496, 503, 506, 511, 521,
-554, 554, 555, 559, 565, 572, 580, 587, 587, 617, 642, 643, 660, 681, 684, 697, 712, 726, 726, 739,
-757, 761, 775, 790, 826, 828, 832, 853, 865, 886, 886, 888, 901, 918, 937, 945, 952, 971, 974], 300), expect=-1)
-
-    f.test(args=([100], 100), expect=1)
 
 
 if __name__ == "__main__":
