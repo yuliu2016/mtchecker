@@ -464,8 +464,10 @@ class TestSuite:
 class ProbingExecutor:
 
     # noinspection PyTypeChecker
-    def __init__(self, config: "InitConfig"):
+    def __init__(self, config: "InitConfig", runners: Dict[Any,Type[FunctionRunner]]):
         self.config = config
+        self.runners = runners
+
         self.ready = False
         self.suites: Dict[str,Dict[str,List[str]]] = {}
 
@@ -475,13 +477,16 @@ class ProbingExecutor:
         # Variables only set during test execution
 
         self._path: str = ""
-        self._tmp_dir: str = ""
-        self._suite: TestSuite = None
+        self._tpath: str = ""
+        self._suite: str = ""
+        self._tests: List[str] = []
         self._total_steps = 0
-        self._tests: List[int] = []
+
+        self._tmp_dir: str = ""
 
 
     def init_probe(self):
+        if self.ready: return
         self.ready = False
         path, tpath = self.config.project_path, self.config.tests_path
         if not os.path.isabs(path):
@@ -528,31 +533,6 @@ class ProbingExecutor:
         self.prev_path = path
         return True
 
-    def check_suite_and_tests(self, suite_no: Optional[int], tests: Optional[List[int]]):
-        if suite_no:
-            if 0 <= suite_no < len(self.checklist):
-                self._suite = self.checklist[suite_no]
-            else:
-                logE(f"Invalid suite number to run: {suite_no}")
-                return False
-        else:
-            self._suite = self.checklist[-1]
-
-        if not tests:
-            tests = range(len(self._suite.funcs))
-
-        self._total_steps = 0
-
-        for test_no in tests:
-            if not (0 <= test_no < len(self._suite.funcs)):
-                logE(f"Invalid test number {test_no}. Aborting...")
-                return False
-            self._total_steps += len(self._suite.funcs[test_no].steps)
-
-        self._tests = tests
-
-        return True
-
     def _checked_run(self):
         self.print_title()
 
@@ -564,7 +544,7 @@ class ProbingExecutor:
 
     def print_title(self):
         logI("=" * CONSOLE_WIDTH)
-        title = f"{self._suite.name} (Total: " \
+        title = f"{self._suite} (Total: " \
                 f"{len(self._tests)} Functions, {self._total_steps} Test Steps)"
         logI(center_text(title, CONSOLE_WIDTH))
         logI("=" * CONSOLE_WIDTH)
@@ -576,19 +556,56 @@ class ProbingExecutor:
         else:
             logP("Temp directory left for debugging")
 
-    def run_tests(self, path: str, suite_no: Optional[int], tests: Optional[List[int]]):
-        if not self.check_suite_and_tests(suite_no, tests): return
+
+    def init_run_tests(self, path: str, test_path:str, suite: str, tests: List[str]):
+        self._path = path
+        self._tpath = test_path
+        self._suite = suite
+        self._tests = tests
+
+        suiteval = self.suites[suite]
+        for test in tests:
+            self._total_steps += len(suiteval[test])
+
+    def run_tests(self, path: str, test_path:str, suite: str, tests: List[str]):
+        self.init_run_tests(path, test_path, suite, tests)
         if not self.check_installs_once(path): return
         if not self.create_tmp_dir(path): return
-
         try:
             self._checked_run()
         finally:
             self.cleanup()
 
+    def resolve_suite_and_tests(self, suite_no: Optional[int], tests: Optional[List[int]]):
+        if suite_no is not None:
+            if 0 <= suite_no < len(self.suites):
+                suite_name, suite = list(self.suites.items())[suite_no]
+            else:
+                logE(f"Invalid suite number to run: {suite_no}")
+                return None, []
+        else:
+            suite_name, suite = next(iter(self.suites.items()))
+
+        if test is None:
+            tests = range(len(suite))
+
+        suite_vals = list(suite.items())
+        test_names = []
+
+        for test_no in tests:
+            if not (0 <= test_no < len(suite)):
+                logE(f"Invalid test number {test_no}. Aborting...")
+                return False
+            test_names.append(suite_vals[test_no].key)
+            # self._total_steps += len(suite_vals[test_no])
+
+        return suite_name, test_names
+
     def run_configured(self):
         self.init_probe()
-        self.run_tests(self.config.project_path, self.config.suite_no, self.config.tests)
+        c = self.config
+        suite, tests = self.resolve_suite_and_tests(c.suite_no, c.tests)
+        self.run_tests(c.project_path, c.tests_path, suite, tests)
 
     def query_suites(self):
         assert self.ready
@@ -653,7 +670,7 @@ class TkInterface(TextInterface):
 
         frame.pack()
 
-        self.dir = executor.config.project_path
+        self.path = executor.config.project_path
         self.folder_var = StringVar()
         self.update_dir_label()
         self.folder = Label(win, textvariable=self.folder_var)
@@ -719,13 +736,13 @@ class TkInterface(TextInterface):
 
 
     def update_dir_label(self):
-        self.folder_var.set(f"Project Folder: {self.dir}")
+        self.folder_var.set(f"Project Folder: {self.path}")
 
     def open_folder(self):
-        self.dir = askdirectory()
+        self.path = askdirectory()
         if dir:
             self.update_dir_label()
-            logI(f"Opened project folder {self.dir}")
+            logI(f"Opened project folder {self.path}")
 
     def init_probe(self):
         self.executor.init_probe()
@@ -740,15 +757,16 @@ class TkInterface(TextInterface):
 
         suite = self.suite_var.get()
         test = self.test_var.get()
+        if test == "All":
+            test = self.executor.query_funcs(suite)
 
         self.thread = threading.Thread(target=self.check_code_new_thread, args=(suite,test))
         self.thread.start()
         self.window.after(100, self.process_log_queue)
 
     def check_code_new_thread(self, suite, test):
-        logI(f"Checking suite {suite} and test {test}")
-        # self.executor.run_configured()
-        # todo self.executor.run_tests()
+        tpath = os.path.join(self.path, "tests")
+        self.executor.run_tests(self.path, tpath, suite, test)
         self.thread = None
 
     def clear_log(self):
@@ -842,11 +860,11 @@ def init_config():
 
     return InitConfig(project_path, tests_path, args.m, args.s, args.q, args.d)
 
-
+RUNNERS = {"default": GCCRunner}
 
 def run_checker():
     config = init_config()
-    executor = ProbingExecutor(config)
+    executor = ProbingExecutor(config, RUNNERS)
 
     global interface
 
