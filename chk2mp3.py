@@ -280,6 +280,25 @@ class GCCRunner(TestRunner):
         if not self.compile_object(step_path,
             post_flags=(str(sofile),), disp_name=f"'{step}'"): return
 
+        exec_path = (self.tmp_path / step).with_suffix(EXECUTABLE_EXT)
+        command = [str(exec_path)]
+
+        try:
+            test_proc = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL, timeout=1)
+        except subprocess.TimeoutExpired:
+            logE("Process timed out and is terminated")
+            return False
+
+        if test_proc.returncode != 0:
+            err_out = test_proc.stderr.decode()
+            logE(f"  Process exited with code {test_proc.returncode}")
+            logE(indent_text(err_out, 2))
+            return False
+        else:
+            std_out = test_proc.stdout.decode()
+            logP(indent_text(std_out, 2))
+            return True
+
 
     def exec_simple(self):
         for step in self.steps:
